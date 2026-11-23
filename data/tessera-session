@@ -1,0 +1,28 @@
+#!/bin/sh
+# Starts a Tessera desktop session. Run from a text login (see tessera-login)
+# or pick "Tessera" in a display manager.
+
+export XDG_CURRENT_DESKTOP=Tessera
+export XDG_SESSION_DESKTOP=tessera
+export XDG_SESSION_TYPE=wayland
+
+# Ask apps to run natively on Wayland when they can.
+export MOZ_ENABLE_WAYLAND=1
+export QT_QPA_PLATFORM="wayland;xcb"
+export SDL_VIDEODRIVER="wayland,x11"
+export ELECTRON_OZONE_PLATFORM_HINT=auto
+export _JAVA_AWT_WM_NONREPARENTING=1
+export XCURSOR_THEME="${XCURSOR_THEME:-Adwaita}"
+export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
+
+state="${XDG_STATE_HOME:-$HOME/.local/state}/tessera"
+mkdir -p "$state"
+if [ -f "$state/tessera.log" ]; then
+	mv -f "$state/tessera.log" "$state/tessera.log.old"
+fi
+
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && [ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ] &&
+		command -v dbus-run-session >/dev/null 2>&1; then
+	exec dbus-run-session -- tessera >"$state/tessera.log" 2>&1
+fi
+exec tessera >"$state/tessera.log" 2>&1

@@ -1,0 +1,43 @@
+#!/bin/sh
+# Run by Tessera once the desktop is up.
+
+# Let D-Bus activated services and systemd user services (such as the
+# xdg-desktop-portal) know about this session.
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+	dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY \
+		XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP TESSERA_SOCK \
+		XCURSOR_THEME XCURSOR_SIZE QT_QPA_PLATFORM MOZ_ENABLE_WAYLAND \
+		ELECTRON_OZONE_PLATFORM_HINT >/dev/null 2>&1
+fi
+
+state="${XDG_STATE_HOME:-$HOME/.local/state}/tessera"
+mkdir -p "$state"
+
+# The bar, launcher and quick settings. Restart them if they ever stop
+# while the desktop is still running.
+(
+	while :; do
+		started=$(date +%s)
+		tessera-shell >>"$state/shell.log" 2>&1
+		tessera msg state >/dev/null 2>&1 || break
+		if [ $(( $(date +%s) - started )) -lt 10 ]; then
+			sleep 5
+		fi
+	done
+) &
+
+# Password prompts for apps that need administrator rights.
+for agent in /usr/bin/lxpolkit \
+		/usr/libexec/polkit-mate-authentication-agent-1 \
+		/usr/lib/*/polkit-mate/polkit-mate-authentication-agent-1; do
+	if [ -x "$agent" ]; then
+		"$agent" >/dev/null 2>&1 &
+		break
+	fi
+done
+
+# Optional personal additions.
+user_autostart="${XDG_CONFIG_HOME:-$HOME/.config}/tessera/autostart"
+if [ -x "$user_autostart" ]; then
+	"$user_autostart" &
+fi

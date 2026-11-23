@@ -1,0 +1,8 @@
+// Let members of the netdev group manage Wi-Fi and network connections
+// without being asked for the administrator password.
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0 &&
+            subject.isInGroup("netdev") && subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

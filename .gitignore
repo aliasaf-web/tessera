@@ -1,0 +1,3 @@
+compositor/build/
+__pycache__/
+*.pyc

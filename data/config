@@ -1,0 +1,34 @@
+# Tessera settings for everyone on this computer.
+# Your own settings go in ~/.config/tessera/config and override these.
+# After changing a file, press Super+Shift+R or log out and back in.
+
+# Colours: dark or light, and the highlight colour (#rrggbb).
+theme=dark
+# accent=#f0883e
+
+# Space between windows, in pixels.
+gaps=14
+
+# Screen size: auto, or a number such as 1, 1.25, 1.5 or 2.
+scale=auto
+
+# Touchpad.
+tap_to_click=true
+natural_scroll=false
+
+# Keyboard. Empty means "use what was chosen when Debian was installed".
+keyboard_layout=
+keyboard_variant=
+keyboard_options=
+
+# Minutes of inactivity before the screen locks and then turns off (0 = never).
+idle_lock_minutes=5
+idle_screen_off_minutes=10
+
+# Show the lock screen when the desktop starts (used for automatic login).
+lock_on_start=false
+
+# Apps opened by Super+Enter, Super+E and Super+B.
+terminal=foot
+files=thunar
+browser=x-www-browser

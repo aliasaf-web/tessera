@@ -1,0 +1,21 @@
+#!/bin/sh
+# Starts the Tessera shell (bar, launcher, quick settings, notifications).
+# gtk4-layer-shell has to be loaded before libwayland-client, hence LD_PRELOAD.
+for dir in ${TESSERA_LIBDIR:-} /usr/lib/*-linux-gnu /usr/lib64 /usr/lib; do
+	if [ -e "$dir/libgtk4-layer-shell.so.0" ]; then
+		LD_PRELOAD="$dir/libgtk4-layer-shell.so.0${LD_PRELOAD:+:$LD_PRELOAD}"
+		export LD_PRELOAD
+		break
+	fi
+done
+if [ -z "$TESSERA_SHELL_DIR" ]; then
+	for dir in /usr/local/share/tessera/shell /usr/share/tessera/shell; do
+		if [ -d "$dir/tessera_shell" ]; then
+			TESSERA_SHELL_DIR="$dir"
+			break
+		fi
+	done
+fi
+PYTHONPATH="$TESSERA_SHELL_DIR${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec /usr/bin/python3 -m tessera_shell "$@"

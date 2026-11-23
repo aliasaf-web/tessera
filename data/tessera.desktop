@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Tessera
+Comment=A clean, simple desktop
+Exec=tessera-session
+Type=Application
+DesktopNames=Tessera

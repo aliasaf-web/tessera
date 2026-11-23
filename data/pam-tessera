@@ -1,0 +1,4 @@
+#%PAM-1.0
+# Used by the Tessera lock screen to check your password.
+@include common-auth
+@include common-account
