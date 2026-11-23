@@ -17,9 +17,11 @@ export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
 
 state="${XDG_STATE_HOME:-$HOME/.local/state}/tessera"
 mkdir -p "$state"
-if [ -f "$state/tessera.log" ]; then
-	mv -f "$state/tessera.log" "$state/tessera.log.old"
-fi
+for log in tessera shell; do
+	if [ -f "$state/$log.log" ]; then
+		mv -f "$state/$log.log" "$state/$log.log.old"
+	fi
+done
 
 if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && [ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ] &&
 		command -v dbus-run-session >/dev/null 2>&1; then

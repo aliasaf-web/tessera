@@ -886,24 +886,7 @@ static void popup_destroy(struct wl_listener *listener, void *data) {
 	free(popup);
 }
 
-static void new_xdg_popup(struct wl_listener *listener, void *data) {
-	struct wlr_xdg_popup *xdg_popup = data;
-	struct wlr_scene_tree *parent_tree = NULL;
-
-	struct wlr_xdg_surface *parent = wlr_xdg_surface_try_from_wlr_surface(xdg_popup->parent);
-	if (parent != NULL) {
-		parent_tree = parent->data;
-	} else {
-		struct wlr_layer_surface_v1 *ls =
-			wlr_layer_surface_v1_try_from_wlr_surface(xdg_popup->parent);
-		if (ls && ls->data) {
-			struct ts_layer_surface *layer = ls->data;
-			parent_tree = layer->popup_tree;
-		}
-	}
-	if (parent_tree == NULL) {
-		return;
-	}
+void popup_create(struct wlr_xdg_popup *xdg_popup, struct wlr_scene_tree *parent_tree) {
 	xdg_popup->base->data = wlr_scene_xdg_surface_create(parent_tree, xdg_popup->base);
 
 	struct ts_popup *popup = calloc(1, sizeof(*popup));
@@ -912,6 +895,20 @@ static void new_xdg_popup(struct wl_listener *listener, void *data) {
 	wl_signal_add(&xdg_popup->base->surface->events.commit, &popup->commit);
 	popup->destroy.notify = popup_destroy;
 	wl_signal_add(&xdg_popup->events.destroy, &popup->destroy);
+}
+
+static void new_xdg_popup(struct wl_listener *listener, void *data) {
+	struct wlr_xdg_popup *xdg_popup = data;
+	/* Popups of panels and menus (layer surfaces) start without a parent;
+	 * they are set up when the layer surface claims them (layer.c). */
+	if (xdg_popup->parent == NULL) {
+		return;
+	}
+	struct wlr_xdg_surface *parent = wlr_xdg_surface_try_from_wlr_surface(xdg_popup->parent);
+	if (parent == NULL || parent->data == NULL) {
+		return;
+	}
+	popup_create(xdg_popup, parent->data);
 }
 
 /* ---------------------------------------------------------------------- */

@@ -85,6 +85,9 @@ int main(int argc, char *argv[]) {
 	if (argc >= 2 && strcmp(argv[1], "msg") == 0) {
 		return ipc_client_main(argc - 2, argv + 2);
 	}
+	if (argc >= 2 && strcmp(argv[1], "--auth-helper") == 0) {
+		return lock_auth_helper_main();
+	}
 	if (argc >= 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
 		printf("tessera %s\n", TESSERA_VERSION);
 		return 0;

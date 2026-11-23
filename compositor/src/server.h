@@ -372,6 +372,7 @@ const char *view_title(struct ts_view *view);
 const char *view_app_id(struct ts_view *view);
 struct ts_view *view_from_surface(struct ts_server *server, struct wlr_surface *surface);
 void view_map_common(struct ts_view *view);
+void popup_create(struct wlr_xdg_popup *xdg_popup, struct wlr_scene_tree *parent_tree);
 void view_unmap_common(struct ts_view *view);
 void view_destroy_common(struct ts_view *view);
 struct ts_view *view_create_common(struct ts_server *server, enum ts_view_type type);
@@ -425,6 +426,7 @@ int ipc_client_main(int argc, char **argv);
 
 /* lock.c */
 void lock_init(struct ts_server *server);
+int lock_auth_helper_main(void);
 void lock_engage(struct ts_server *server);
 bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepoint);
 void lock_arrange(struct ts_server *server);

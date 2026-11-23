@@ -137,6 +137,39 @@ static int pam_conversation(int num, const struct pam_message **msg,
 	return PAM_SUCCESS;
 }
 
+/* `tessera --auth-helper`: reads a password on stdin, checks it with PAM
+ * and writes "1" (correct) or "0" to stdout. Running this as a separate
+ * program keeps PAM out of the desktop's own process. */
+int lock_auth_helper_main(void) {
+	char password[512];
+	size_t len = 0;
+	ssize_t n;
+	while (len < sizeof(password) - 1 &&
+			(n = read(STDIN_FILENO, password + len, sizeof(password) - 1 - len)) > 0) {
+		len += n;
+	}
+	password[len] = '\0';
+
+	struct passwd *pw = getpwuid(getuid());
+	char ok = '0';
+	if (pw != NULL) {
+		struct pam_data data = { .password = password };
+		struct pam_conv conv = { pam_conversation, &data };
+		pam_handle_t *handle = NULL;
+		if (pam_start("tessera", pw->pw_name, &conv, &handle) == PAM_SUCCESS) {
+			if (pam_authenticate(handle, 0) == PAM_SUCCESS) {
+				ok = '1';
+			}
+			pam_end(handle, PAM_SUCCESS);
+		}
+	}
+	explicit_bzero(password, sizeof(password));
+	if (write(STDOUT_FILENO, &ok, 1) != 1) {
+		return 1;
+	}
+	return ok == '1' ? 0 : 1;
+}
+
 static int auth_done(int fd, uint32_t mask, void *data) {
 	struct ts_server *server = data;
 	char result = 0;
@@ -150,7 +183,7 @@ static int auth_done(int fd, uint32_t mask, void *data) {
 		server->auth_pid = 0;
 	}
 	server->auth_busy = false;
-	if (n == 1 && result == 1) {
+	if (n == 1 && result == '1') {
 		lock_release(server);
 	} else {
 		server->auth_failed = true;
@@ -160,45 +193,48 @@ static int auth_done(int fd, uint32_t mask, void *data) {
 }
 
 static void start_auth(struct ts_server *server) {
-	int fds[2];
-	if (pipe2(fds, O_CLOEXEC) < 0) {
+	int in[2], out[2];
+	if (pipe2(in, O_CLOEXEC) < 0) {
 		return;
 	}
-	struct passwd *pw = getpwuid(getuid());
-	const char *user = pw ? pw->pw_name : getenv("USER");
-
+	if (pipe2(out, O_CLOEXEC) < 0) {
+		close(in[0]);
+		close(in[1]);
+		return;
+	}
 	pid_t pid = fork();
 	if (pid < 0) {
-		close(fds[0]);
-		close(fds[1]);
+		close(in[0]);
+		close(in[1]);
+		close(out[0]);
+		close(out[1]);
 		return;
 	}
 	if (pid == 0) {
-		close(fds[0]);
-		signal(SIGCHLD, SIG_DFL);
-		struct pam_data data = { .password = server->password };
-		struct pam_conv conv = { pam_conversation, &data };
-		pam_handle_t *handle = NULL;
-		char ok = 0;
-		if (pam_start("tessera", user, &conv, &handle) == PAM_SUCCESS) {
-			if (pam_authenticate(handle, 0) == PAM_SUCCESS) {
-				ok = 1;
-			}
-			pam_end(handle, PAM_SUCCESS);
-		}
-		if (write(fds[1], &ok, 1) < 0) {
-			_exit(1);
-		}
-		_exit(0);
+		/* Only async-signal-safe calls between fork and exec. */
+		dup2(in[0], STDIN_FILENO);
+		dup2(out[1], STDOUT_FILENO);
+		execl("/proc/self/exe", "tessera", "--auth-helper", (char *)NULL);
+		_exit(127);
 	}
-	close(fds[1]);
+	close(in[0]);
+	close(out[1]);
+	size_t written = 0;
+	while (written < server->password_len) {
+		ssize_t n = write(in[1], server->password + written, server->password_len - written);
+		if (n <= 0) {
+			break;
+		}
+		written += n;
+	}
+	close(in[1]);
 	explicit_bzero(server->password, sizeof(server->password));
 	server->password_len = 0;
 	server->auth_pid = pid;
-	server->auth_fd = fds[0];
+	server->auth_fd = out[0];
 	server->auth_busy = true;
 	server->auth_failed = false;
-	server->auth_source = wl_event_loop_add_fd(server->loop, fds[0],
+	server->auth_source = wl_event_loop_add_fd(server->loop, out[0],
 		WL_EVENT_READABLE | WL_EVENT_HANGUP, auth_done, server);
 	lock_redraw(server);
 }

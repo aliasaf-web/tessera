@@ -148,8 +148,11 @@ class Notifications:
         urgency = hints.get("urgency", 1) if isinstance(hints, dict) else 1
         if isinstance(urgency, GLib.Variant):
             urgency = urgency.unpack()
-        nid = replaces if replaces and replaces in self.active else self.next_id
-        if nid == self.next_id:
+        if replaces and (replaces in self.active or
+                         any(h["id"] == replaces for h in self.history)):
+            nid = replaces
+        else:
+            nid = self.next_id
             self.next_id += 1
 
         entry = {

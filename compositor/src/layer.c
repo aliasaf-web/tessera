@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include <stdlib.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/util/log.h>
 #include "server.h"
 
@@ -164,10 +165,8 @@ static void layer_destroy(struct wl_listener *listener, void *data) {
 }
 
 static void layer_new_popup(struct wl_listener *listener, void *data) {
-	/* Handled by the generic xdg popup code, which looks up the parent's
-	 * popup tree through the surface's data pointer. */
-	(void)listener;
-	(void)data;
+	struct ts_layer_surface *layer = wl_container_of(listener, layer, new_popup);
+	popup_create(data, layer->popup_tree);
 }
 
 static void new_layer_surface(struct wl_listener *listener, void *data) {

@@ -458,6 +458,21 @@ scale.level slider {
   box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 
+switch {
+  background: @surface2@;
+  border: 1px solid @border@;
+}
+
+switch:checked {
+  background: @accent@;
+  border-color: transparent;
+}
+
+switch slider {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
 list.networks, list.plain {
   background: transparent;
 }

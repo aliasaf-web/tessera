@@ -28,6 +28,10 @@ static void output_destroy(struct wl_listener *listener, void *data) {
 	struct ts_server *server = output->server;
 
 	lock_output_destroyed(output);
+	if (server->ratio_output == output) {
+		server->ratio_output = NULL;
+		server->cursor_mode = TS_CURSOR_PASSTHROUGH;
+	}
 
 	struct ts_layer_surface *layer, *tmp;
 	for (int i = 0; i < 4; i++) {
@@ -182,6 +186,9 @@ void output_set_dpms(struct ts_server *server, bool on) {
 			output->dpms_off = !on;
 		}
 		wlr_output_state_finish(&state);
+	}
+	if (on) {
+		arrange_all(server);
 	}
 }
 

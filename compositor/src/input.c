@@ -38,6 +38,9 @@ void seat_focus_surface(struct ts_server *server, struct wlr_surface *surface) {
 		wlr_seat_keyboard_notify_clear_focus(seat);
 		return;
 	}
+	if (server->locked) {
+		return;
+	}
 	if (seat->keyboard_state.focused_surface == surface) {
 		return;
 	}

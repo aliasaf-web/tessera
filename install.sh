@@ -155,7 +155,12 @@ sudo systemctl daemon-reload
 # network name and password, so it can be managed from quick settings.
 say "Letting the desktop manage Wi-Fi and network connections"
 IFACES=/etc/network/interfaces
-if [ -f "$IFACES" ] && grep -E '^[[:space:]]*iface[[:space:]]' "$IFACES" |
+# The file can hold the Wi-Fi password, so only root may read it.
+IFACES_COPY="$(mktemp)"
+chmod 600 "$IFACES_COPY"
+# shellcheck disable=SC2024  # reading needs root, the copy belongs to us
+sudo cat "$IFACES" >"$IFACES_COPY" 2>/dev/null || true
+if grep -E '^[[:space:]]*iface[[:space:]]' "$IFACES_COPY" |
 		grep -qvE '^[[:space:]]*iface[[:space:]]+lo[[:space:]]'; then
 	[ -f "$IFACES.before-tessera" ] || sudo cp "$IFACES" "$IFACES.before-tessera"
 	current=""
@@ -188,12 +193,13 @@ if [ -f "$IFACES" ] && grep -E '^[[:space:]]*iface[[:space:]]' "$IFACES" |
 		wpa-psk)
 			shift; psk="$*" ;;
 		esac
-	done <"$IFACES"
+	done <"$IFACES_COPY"
 	migrate_wifi
 	# Keep only the loopback part; NetworkManager handles everything else.
 	printf '# Networks are managed by NetworkManager (Tessera quick settings).\n# The previous version of this file is in %s.before-tessera\n\nsource /etc/network/interfaces.d/*\n\nauto lo\niface lo inet loopback\n' "$IFACES" |
 		sudo tee "$IFACES" >/dev/null
 fi
+rm -f "$IFACES_COPY"
 sudo systemctl enable NetworkManager >/dev/null 2>&1 || true
 sudo systemctl enable bluetooth >/dev/null 2>&1 || true
 
