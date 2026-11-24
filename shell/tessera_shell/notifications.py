@@ -4,7 +4,7 @@ import html
 import re
 import time
 
-from gi.repository import GdkPixbuf, Gdk, Gio, GLib, Gtk, Pango
+from gi.repository import GdkPixbuf, Gdk, Gio, GLib, Gtk, Gtk4LayerShell as LayerShell, Pango
 
 from .layer import Edge, Layer, button, hbox, icon, label, layer_window, vbox
 
@@ -90,8 +90,8 @@ class Notifications:
         self.connection = None
 
         self.window = layer_window(shell.app, "tessera-notifications", Layer.OVERLAY,
-                                   (Edge.TOP, Edge.RIGHT),
-                                   {Edge.TOP: shell.gaps, Edge.RIGHT: shell.gaps})
+                                   (Edge.TOP, Edge.RIGHT))
+        self.place()
         self.column = vbox(10)
         self.column.set_size_request(360, -1)
         self.window.set_child(self.column)
@@ -102,6 +102,11 @@ class Notifications:
                          Gio.BusNameOwnerFlags.REPLACE | Gio.BusNameOwnerFlags.ALLOW_REPLACEMENT,
                          self._bus_acquired, None,
                          lambda *_: print("tessera-shell: another notification service is running"))
+
+    def place(self):
+        gaps = self.shell.metrics(None)["gaps"]
+        LayerShell.set_margin(self.window, Edge.TOP, gaps)
+        LayerShell.set_margin(self.window, Edge.RIGHT, gaps)
 
     # ---------------------------------------------------------------- D-Bus
 

@@ -28,6 +28,8 @@ static void output_destroy(struct wl_listener *listener, void *data) {
 	struct ts_server *server = output->server;
 
 	lock_output_destroyed(output);
+	layout_output_destroyed(output);
+	wallpaper_output_destroyed(output);
 	if (server->ratio_output == output) {
 		server->ratio_output = NULL;
 		server->cursor_mode = TS_CURSOR_PASSTHROUGH;
@@ -83,6 +85,27 @@ static double auto_scale(struct wlr_output *wlr_output) {
 	return 1.0;
 }
 
+static double output_wanted_scale(struct ts_server *server, struct wlr_output *wlr_output) {
+	return server->config.scale > 0 ? server->config.scale : auto_scale(wlr_output);
+}
+
+/* After the settings change: apply a new screen scale. */
+void outputs_apply_config(struct ts_server *server) {
+	struct ts_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		struct wlr_output *wlr_output = output->wlr_output;
+		double scale = output_wanted_scale(server, wlr_output);
+		if (scale != wlr_output->scale && !output->dpms_off) {
+			struct wlr_output_state state;
+			wlr_output_state_init(&state);
+			wlr_output_state_set_scale(&state, scale);
+			wlr_output_commit_state(wlr_output, &state);
+			wlr_output_state_finish(&state);
+			wlr_xcursor_manager_load(server->cursor_mgr, scale);
+		}
+	}
+}
+
 static void new_output(struct wl_listener *listener, void *data) {
 	struct ts_server *server = wl_container_of(listener, server, new_output);
 	struct wlr_output *wlr_output = data;
@@ -111,7 +134,7 @@ static void new_output(struct wl_listener *listener, void *data) {
 	wlr_output_state_finish(&state);
 
 	/* Scale depends on the size the mode gave us. */
-	double scale = server->config.scale > 0 ? server->config.scale : auto_scale(wlr_output);
+	double scale = output_wanted_scale(server, wlr_output);
 	if (scale != wlr_output->scale) {
 		wlr_output_state_init(&state);
 		wlr_output_state_set_scale(&state, scale);
@@ -120,6 +143,10 @@ static void new_output(struct wl_listener *listener, void *data) {
 	}
 
 	struct ts_output *output = calloc(1, sizeof(*output));
+	if (output == NULL) {
+		wlr_log(WLR_ERROR, "Out of memory");
+		return;
+	}
 	output->wlr_output = wlr_output;
 	output->server = server;
 	output->workspace = 1;
@@ -150,6 +177,7 @@ static void new_output(struct wl_listener *listener, void *data) {
 
 	arrange_layers(output);
 	lock_arrange(server);
+	night_light_apply_output(output);
 	wlr_xcursor_manager_load(server->cursor_mgr, scale);
 	cursor_rebase(server);
 }
@@ -189,6 +217,10 @@ void output_set_dpms(struct ts_server *server, bool on) {
 	}
 	if (on) {
 		arrange_all(server);
+		struct ts_output *o;
+		wl_list_for_each(o, &server->outputs, link) {
+			night_light_apply_output(o);
+		}
 	}
 }
 

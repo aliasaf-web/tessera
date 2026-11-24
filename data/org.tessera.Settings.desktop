@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Settings
+Comment=Change how Tessera looks and works
+Exec=tessera-settings
+Icon=preferences-system
+Terminal=false
+Type=Application
+Categories=Settings;DesktopSettings;
+Keywords=wallpaper;background;night;light;touchpad;keyboard;sound;screen;scale;theme;dark;
+OnlyShowIn=Tessera;

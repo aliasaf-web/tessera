@@ -1,8 +1,17 @@
 #!/bin/sh
-# Installs (or updates) the Tessera desktop on Debian 13 "trixie".
+# Installs the Tessera desktop on Debian 13 "trixie".
 # Run it as your normal user, from inside the tessera folder:   sh install.sh
+# "sh install.sh --update" brings an installed Tessera up to date without
+# asking any questions (tessera-update runs it after downloading).
 
 set -eu
+
+MODE=install
+case "${1:-}" in
+"") ;;
+--update) MODE=update ;;
+*) printf 'Usage: sh install.sh [--update]\n'; exit 2 ;;
+esac
 
 cd "$(dirname "$0")"
 SRC="$(pwd)"
@@ -32,7 +41,9 @@ if [ "${VERSION_CODENAME:-}" != "trixie" ]; then
 fi
 
 AUTOLOGIN=yes
-if [ "${TESSERA_AUTOLOGIN:-ask}" = "ask" ]; then
+if [ "$MODE" = "update" ]; then
+	AUTOLOGIN=keep
+elif [ "${TESSERA_AUTOLOGIN:-ask}" = "ask" ]; then
 	echo
 	echo "When the laptop turns on, Tessera can go straight to its own lock screen,"
 	echo "where you type your password. (Otherwise you log in on a text screen first.)"
@@ -57,8 +68,9 @@ libxcb1-dev libxcb-icccm4-dev libxcb-ewmh-dev"
 # Needed to run the desktop.
 RUNTIME="xwayland dbus-user-session polkitd network-manager pipewire-audio
 wireplumber pulseaudio-utils bluez rfkill upower xdg-desktop-portal
-xdg-desktop-portal-gtk xdg-desktop-portal-wlr xdg-utils xdg-user-dirs
+xdg-desktop-portal-gtk xdg-desktop-portal-wlr xdg-utils xdg-user-dirs git
 python3 python3-gi gir1.2-gtk-4.0 gir1.2-gtk4layershell-1.0 libgtk4-layer-shell0
+gir1.2-adw-1 gir1.2-gdkpixbuf-2.0
 gsettings-desktop-schemas dconf-gsettings-backend librsvg2-common
 adwaita-icon-theme papirus-icon-theme fonts-inter fonts-noto-color-emoji
 grim slurp wl-clipboard playerctl"
@@ -72,32 +84,53 @@ sudo apt-get install -y $BUILD $RUNTIME $APPS
 # Nice to have; skipped quietly if a package is not available.
 for pkg in adw-gtk3 gnome-text-editor loupe celluloid pavucontrol file-roller \
 		tumbler gvfs-backends lxpolkit thunar-archive-plugin; do
-	sudo apt-get install -y "$pkg" >/dev/null 2>&1 || warn "  (skipped optional package $pkg)"
+	if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'ok installed'; then
+		sudo apt-get install -y "$pkg" >/dev/null 2>&1 || warn "  (skipped optional package $pkg)"
+	fi
 done
 
 # ---------------------------------------------------------------- build
 
 say "Building the Tessera window manager"
-rm -rf "$SRC/compositor/build"
-meson setup "$SRC/compositor/build" "$SRC/compositor" --prefix="$PREFIX" --buildtype=release
-ninja -C "$SRC/compositor/build"
-sudo ninja -C "$SRC/compositor/build" install
+BUILDDIR="$SRC/compositor/build"
+fresh_build() {
+	rm -rf "$BUILDDIR"
+	meson setup "$BUILDDIR" "$SRC/compositor" --prefix="$PREFIX" --buildtype=release
+	ninja -C "$BUILDDIR"
+}
+# An update only rebuilds what changed; a full build is the fallback.
+if [ "$MODE" = "update" ] && [ -f "$BUILDDIR/build.ninja" ]; then
+	ninja -C "$BUILDDIR" || fresh_build
+else
+	fresh_build
+fi
+sudo ninja -C "$BUILDDIR" install
 
 say "Installing the Tessera shell and settings"
 sudo install -d "$PREFIX/share/tessera/shell"
 sudo rm -rf "$PREFIX/share/tessera/shell/tessera_shell"
 sudo cp -r "$SRC/shell/tessera_shell" "$PREFIX/share/tessera/shell/"
 sudo find "$PREFIX/share/tessera/shell" -name '__pycache__' -prune -exec rm -rf {} +
-for script in tessera-session tessera-login tessera-autostart tessera-shell; do
+for script in tessera-session tessera-login tessera-autostart tessera-shell \
+		tessera-settings tessera-update; do
 	sudo install -m 755 "$SRC/data/$script" "$PREFIX/bin/$script"
 done
+# Lets tessera-update find this folder.
+printf '%s\n' "$SRC" | sudo tee "$PREFIX/share/tessera/source" >/dev/null
+sudo install -Dm 644 "$SRC/data/org.tessera.Settings.desktop" \
+	"$PREFIX/share/applications/org.tessera.Settings.desktop"
 sudo install -Dm 644 "$SRC/data/tessera.desktop" /usr/share/wayland-sessions/tessera.desktop
 sudo install -Dm 644 "$SRC/data/pam-tessera" /etc/pam.d/tessera
 sudo install -Dm 644 "$SRC/data/tessera-portals.conf" /etc/xdg/xdg-desktop-portal/tessera-portals.conf
 sudo install -Dm 644 "$SRC/data/polkit-tessera.rules" /etc/polkit-1/rules.d/50-tessera.rules
-if [ ! -f /etc/tessera/config ]; then
-	sudo install -Dm 644 "$SRC/data/config" /etc/tessera/config
+# The shared settings file is replaced by the new version; personal choices
+# live in ~/.config/tessera/config. Only the login choice is carried over.
+LOCK_ON_START=false
+if [ -f /etc/tessera/config ] && grep -q '^lock_on_start=true' /etc/tessera/config; then
+	LOCK_ON_START=true
 fi
+sudo install -Dm 644 "$SRC/data/config" /etc/tessera/config
+sudo sed -i "s/^lock_on_start=.*/lock_on_start=$LOCK_ON_START/" /etc/tessera/config
 
 # ------------------------------------------------------------ your user
 
@@ -140,13 +173,12 @@ if [ "$AUTOLOGIN" = "yes" ]; then
 	printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --noclear %%I $TERM\n' "$ME" |
 		sudo tee "$GETTY_DIR/tessera-autologin.conf" >/dev/null
 	sudo sed -i 's/^lock_on_start=.*/lock_on_start=true/' /etc/tessera/config
-	grep -q '^lock_on_start=' /etc/tessera/config ||
-		echo 'lock_on_start=true' | sudo tee -a /etc/tessera/config >/dev/null
-else
+	sudo systemctl daemon-reload
+elif [ "$AUTOLOGIN" = "no" ]; then
 	sudo rm -f "$GETTY_DIR/tessera-autologin.conf"
 	sudo sed -i 's/^lock_on_start=.*/lock_on_start=false/' /etc/tessera/config
+	sudo systemctl daemon-reload
 fi
-sudo systemctl daemon-reload
 
 # -------------------------------------------------------------- network
 
@@ -202,6 +234,20 @@ fi
 rm -f "$IFACES_COPY"
 sudo systemctl enable NetworkManager >/dev/null 2>&1 || true
 sudo systemctl enable bluetooth >/dev/null 2>&1 || true
+
+VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$SRC/shell/tessera_shell/__init__.py")"
+if [ "$MODE" = "update" ]; then
+	say "Tessera is up to date (version $VERSION)"
+	echo
+	echo "  The new version starts after a restart."
+	printf '  Restart now? Save your work first. [y/N] '
+	read -r answer </dev/tty || answer=""
+	case "$answer" in
+	y|Y|yes) sudo systemctl reboot ;;
+	*) echo "  OK. It will be used the next time the computer starts." ;;
+	esac
+	exit 0
+fi
 
 say "All done!"
 echo

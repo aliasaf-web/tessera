@@ -8,8 +8,13 @@ manager, bar, app launcher, quick settings, notifications and lock screen.
 - **One button for apps.** Tap the **Super** key (the Windows key) or click the
   grid button at the bottom left. Then start typing.
 - **Quick settings in one place.** Click the clock at the bottom right for
-  Wi-Fi, Bluetooth, sound, brightness, dark mode, battery and power.
-- **Light on your laptop.** It uses no extra effects and only a small amount of memory.
+  Wi-Fi, Bluetooth, sound, brightness, dark mode, night light, battery and power.
+- **Touchpad swipes.** Swipe left or right with three fingers to change workspace,
+  up to see your apps.
+- **A simple Settings app** for colours, background, screen size, night light,
+  touchpad, keyboard, sound, screen lock and default apps.
+- **Light on your laptop.** Small screens get a compact layout automatically,
+  and it only needs a small amount of memory.
 
 ---
 
@@ -87,50 +92,64 @@ press Enter. A welcome screen explains the basics.
 | Open an app | Tap **Super**, type its name, press **Enter** |
 | Open a terminal / files / web browser | **Super + Enter** / **Super + E** / **Super + B** |
 | Close a window | **Super + Q**, or click the **×** on its title bar |
+| Switch to another window | Hold **Alt**, tap **Tab** until it's highlighted, let go |
 | Move between windows | **Super + arrow keys**, or click a window |
 | Swap windows around | **Super + Shift + arrow keys**, or drag a title bar onto another window |
 | Make one window big / full screen | **Super + M** / **Super + F** |
 | Let a window float freely | **Super + Space** (then drag it with **Super + left mouse**) |
 | Make the left column wider | Drag the gap between the columns |
-| Workspaces (separate desktops) | **Super + 1 … 9**; move a window with **Super + Shift + 1 … 9** |
+| Change workspace (separate desktops) | Swipe left/right with **3 fingers**, **Super + Ctrl + ← / →**, or **Super + 1 … 9** |
+| Move a window to another workspace | **Super + Shift + 1 … 9** |
+| See your apps / hide them | Swipe up / down with **3 fingers** |
 | Screenshot (whole screen / an area) | **Print Screen** / **Shift + Print Screen** |
 | Lock the screen | **Super + L** |
 | Show all shortcuts | **Super + /** |
 
-Wi-Fi, Bluetooth, volume, brightness, dark mode, **Sleep**, **Restart** and
-**Shut down** are all in quick settings (click the clock).
+Wi-Fi, Bluetooth, volume, brightness, dark mode, night light, **Sleep**,
+**Restart** and **Shut down** are all in quick settings (click the clock).
+
+The dots at the bottom left show your workspaces: the long one is where you are.
+Click a dot, or scroll over them, to move between workspaces.
 
 Screenshots are saved in **Pictures › Screenshots** and copied, so you can paste them straight away.
 
 ## Settings
 
-Most things are in quick settings. For the rest, open a terminal (**Super + Enter**) and type:
+Click the clock, then the **gear** button at the top of quick settings. (Or tap
+**Super** and type *settings*.) Changes apply straight away.
 
-```
-mkdir -p ~/.config/tessera && nano ~/.config/tessera/config
-```
+| Page | What you can change |
+|---|---|
+| Appearance | Dark or light, highlight colour, background (plain, mosaic or your own picture), compact or comfortable layout, animations |
+| Display | Size of everything (scale), night light and its times and warmth |
+| Touchpad & mouse | Tap to click, natural scrolling, pointer speed, three-finger swipes |
+| Keyboard | Keyboard layout, list of shortcuts |
+| Sound | Which speakers and microphone to use |
+| Power & lock | When the screen locks and turns off |
+| Default apps | Web browser, files app and terminal |
+| About | Your computer's details and **Update Tessera** |
 
-You can copy any line from `/etc/tessera/config` into it and change it, for example:
-
-```
-accent=#3cc8b4
-gaps=10
-scale=1.25
-natural_scroll=true
-idle_lock_minutes=10
-```
-
-Press **Ctrl + O**, **Enter**, **Ctrl + X** to save, then **Super + Shift + R** to apply.
+Your choices are saved in `~/.config/tessera/config`. You can also edit that file
+by hand (any line from `/etc/tessera/config` can go in it); press
+**Super + Shift + R** afterwards to apply it.
 
 ## Updating
 
+Open **Settings › About** and click **Update**, or open a terminal
+(**Super + Enter**) and type:
+
 ```
-cd ~/tessera
-git pull          # only if you got it from GitHub
-sh install.sh
+tessera-update
 ```
 
-Your settings are kept.
+Type your password when asked. It downloads the newest version, installs it and
+then offers to restart. Your settings are kept.
+
+> **Updating from the first version (1.0):** it doesn't have `tessera-update`
+> yet, so the first time type this instead:
+> ```
+> cd ~/tessera && git pull && sh install.sh --update
+> ```
 
 ## If something goes wrong
 
@@ -149,9 +168,9 @@ Your settings are kept.
 
 | Part | What it does | Made with |
 |---|---|---|
-| `compositor/` | Window manager: draws windows, tiling, title bars, rounded corners, workspaces, keyboard and touchpad, lock screen, screen locking before sleep | C with wlroots 0.18 (Debian's version) |
-| `shell/` | Bar, app launcher, quick settings, notifications, volume/brightness pop-up, welcome screen | Python with GTK 4 and gtk4-layer-shell |
-| `data/` | Session start-up scripts, default settings, password check (PAM), screen-sharing setup | Shell scripts and config files |
+| `compositor/` | Window manager: draws windows, tiling, title bars, rounded corners, workspaces and their animation, window switcher, keyboard, touchpad and gestures, night light, background, lock screen, screen locking before sleep | C with wlroots 0.18 (Debian's version) |
+| `shell/` | Bar, app launcher, quick settings, notifications, volume/brightness pop-up, window switcher, welcome screen, Settings app | Python with GTK 4, gtk4-layer-shell and libadwaita |
+| `data/` | Session start-up scripts, update command, default settings, password check (PAM), screen-sharing setup | Shell scripts and config files |
 
 Tessera uses Debian's standard services rather than replacing them:
 NetworkManager (Wi-Fi), PipeWire (sound), BlueZ (Bluetooth), UPower (battery),

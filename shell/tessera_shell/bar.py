@@ -9,21 +9,21 @@ from .layer import Edge, Layer, button, clear, hbox, icon, label, layer_window
 
 
 class Bar:
-    HEIGHT = 44
-
     def __init__(self, shell, monitor):
         self.shell = shell
         self.monitor = monitor
-        gaps = shell.gaps
+        size = shell.metrics(monitor)
         self.window = layer_window(
             shell.app, "tessera-bar", Layer.TOP,
             (Edge.BOTTOM, Edge.LEFT, Edge.RIGHT),
-            {Edge.BOTTOM: 12, Edge.LEFT: gaps, Edge.RIGHT: gaps},
+            {Edge.BOTTOM: size["margin"], Edge.LEFT: size["gaps"], Edge.RIGHT: size["gaps"]},
             monitor=monitor, exclusive=True)
-        self.window.set_default_size(-1, self.HEIGHT)
+        self.window.set_default_size(-1, size["bar"])
 
         center = Gtk.CenterBox()
         center.add_css_class("bar")
+        if size["compact"]:
+            center.add_css_class("compact")
 
         apps = button(icon("view-app-grid-symbolic", 18), css="round",
                       tooltip="All apps  (Super)", on_click=shell.toggle_launcher)
@@ -31,7 +31,13 @@ class Bar:
         self.ws_box.add_css_class("pill")
         self.ws_box.add_css_class("workspaces")
         self.ws_box.set_valign(Gtk.Align.FILL)
-        left = hbox(10, apps, self.ws_box)
+        self._scroll_total = 0.0
+        self._scroll_ready = True
+        scroll = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.BOTH_AXES)
+        scroll.connect("scroll", self._on_scroll)
+        self.ws_box.add_controller(scroll)
+        left = hbox(10 if not size["compact"] else 8, apps, self.ws_box)
         center.set_start_widget(left)
 
         self.net_icon = icon("network-wireless-offline-symbolic")
@@ -49,10 +55,14 @@ class Bar:
         self.window.set_child(center)
         self.window.present()
 
-        shell.network.connect(self.update_network)
-        shell.audio.connect(self.update_audio)
-        shell.battery.connect(self.update_battery)
-        shell.bluetooth.connect(self.update_bluetooth)
+        self._listeners = [
+            (shell.network, self.update_network),
+            (shell.audio, self.update_audio),
+            (shell.battery, self.update_battery),
+            (shell.bluetooth, self.update_bluetooth),
+        ]
+        for service, callback in self._listeners:
+            service.connect(callback)
         self.update_clock()
         self._clock_source = GLib.timeout_add_seconds(self._seconds_to_minute(), self._tick)
         self.update_workspaces(shell.state)
@@ -61,6 +71,8 @@ class Bar:
         if self._clock_source:
             GLib.source_remove(self._clock_source)
             self._clock_source = None
+        for service, callback in self._listeners:
+            service.disconnect(callback)
         self.window.destroy()
 
     @staticmethod
@@ -70,6 +82,23 @@ class Bar:
     def _tick(self):
         self.update_clock()
         self._clock_source = GLib.timeout_add_seconds(self._seconds_to_minute(), self._tick)
+        return False
+
+    def _on_scroll(self, _ctrl, dx, dy):
+        """Scrolling over the dots moves between workspaces."""
+        if not self._scroll_ready:
+            return True
+        self._scroll_total += dy if abs(dy) >= abs(dx) else dx
+        if abs(self._scroll_total) >= 1.0:
+            ipc.send("workspace", "next" if self._scroll_total > 0 else "prev")
+            self._scroll_total = 0.0
+            self._scroll_ready = False
+            GLib.timeout_add(250, self._scroll_cooldown)
+        return True
+
+    def _scroll_cooldown(self):
+        self._scroll_ready = True
+        self._scroll_total = 0.0
         return False
 
     def update_clock(self):

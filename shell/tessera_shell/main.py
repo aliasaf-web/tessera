@@ -27,6 +27,7 @@ from .launcher import Launcher  # noqa: E402
 from .notifications import Notifications  # noqa: E402
 from .osd import Osd  # noqa: E402
 from .quicksettings import QuickSettings  # noqa: E402
+from .switcher import Switcher  # noqa: E402
 from .theme import Theme, apply_app_theme, read_config  # noqa: E402
 
 
@@ -34,14 +35,10 @@ class Shell:
     def __init__(self, app):
         self.app = app
         self.state = {}
-        cfg = read_config()
-        try:
-            self.gaps = max(0, min(64, int(cfg.get("gaps", "14"))))
-        except ValueError:
-            self.gaps = 14
+        self.cfg = read_config()
 
         self.theme = Theme()
-        apply_app_theme(self.theme.dark)
+        apply_app_theme(self.theme.dark, self.theme.accent_name)
         self.audio = services.Audio()
         self.brightness = services.Brightness()
         self.battery = services.Battery()
@@ -53,6 +50,7 @@ class Shell:
         self.quick_settings = QuickSettings(self)
         self.osd = Osd(self)
         self.help = Help(self)
+        self.switcher = Switcher(self)
 
         self.bars = {}
         monitors = Gdk.Display.get_default().get_monitors()
@@ -78,6 +76,47 @@ class Shell:
             if mon not in self.bars:
                 self.bars[mon] = Bar(self, mon)
         return False
+
+    def metrics(self, monitor):
+        """Sizes of the bar and the space around windows. Small screens
+        (up to 800 pixels tall) get a slimmer bar unless set otherwise;
+        the window manager uses the same rule."""
+        if monitor is None:
+            monitors = Gdk.Display.get_default().get_monitors()
+            monitor = monitors.get_item(0) if monitors.get_n_items() else None
+        height = monitor.get_geometry().height if monitor is not None else 1080
+        size = self.cfg.get("layout_size", "auto")
+        compact = size == "compact" or (size not in ("compact", "comfortable") and height <= 800)
+        try:
+            gaps = int(self.cfg.get("gaps", ""))
+            gaps = max(0, min(64, gaps))
+        except ValueError:
+            gaps = 8 if compact else 14
+        return {"compact": compact, "gaps": gaps, "bar": 36 if compact else 44,
+                "margin": 8 if compact else 12}
+
+    def reload(self):
+        """Settings changed: pick up colours, sizes and so on."""
+        self.cfg = read_config()
+        self.theme.reload()
+        apply_app_theme(self.theme.dark, self.theme.accent_name)
+        for bar in list(self.bars.values()):
+            bar.destroy()
+        self.bars = {}
+        self.sync_bars()
+        self.quick_settings.place()
+        self.quick_settings.update_theme()
+        self.osd.place()
+        self.notifications.place()
+
+    def open_settings(self):
+        self.launcher.hide()
+        self.quick_settings.hide()
+        try:
+            subprocess.Popen(["tessera-settings"], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            self.notifications.notify_internal("Could not open Settings", str(exc))
 
     def current_monitor(self):
         # The compositor places a popup on the screen in use when no monitor
@@ -115,15 +154,28 @@ class Shell:
             if self._welcome_pending and not event.get("locked"):
                 self._welcome_pending = False
                 GLib.timeout_add(800, lambda: (self.help.show(self.current_monitor()), False)[1])
-            if event.get("theme") and event.get("theme") != self.theme.name:
-                self.theme.reload()
-                self.quick_settings.update_theme()
+            self.quick_settings.update_theme()
+        elif kind == "reload":
+            self.reload()
+        elif kind == "switcher":
+            if event.get("visible"):
+                # The chosen window gets the keyboard, so close what it would cover.
+                self.launcher.hide()
+                self.quick_settings.hide()
+                self.help.window.set_visible(False)
+            self.switcher.update(event)
         elif kind == "key":
             self.on_key(event.get("action", ""))
 
     def on_key(self, action):
         if action == "launcher":
             self.toggle_launcher()
+        elif action == "launcher-show":
+            if not self.launcher.visible:
+                self.toggle_launcher()
+        elif action == "launcher-hide":
+            self.launcher.hide()
+            self.quick_settings.hide()
         elif action == "power":
             self.toggle_quick_settings(None, "power")
         elif action == "help":

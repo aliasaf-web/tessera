@@ -99,6 +99,19 @@ static struct cairo_buffer *cairo_buffer_create(int width, int height) {
 	return buffer;
 }
 
+/* Wrap an existing cairo image surface; the buffer holds its own reference. */
+struct wlr_buffer *deco_buffer_from_surface(void *cairo_surface) {
+	cairo_surface_t *surface = cairo_surface;
+	struct cairo_buffer *buffer = calloc(1, sizeof(*buffer));
+	if (buffer == NULL) {
+		return NULL;
+	}
+	buffer->surface = cairo_surface_reference(surface);
+	wlr_buffer_init(&buffer->base, &cairo_buffer_impl, cairo_image_surface_get_width(surface),
+		cairo_image_surface_get_height(surface));
+	return &buffer->base;
+}
+
 static void set_color(cairo_t *cr, struct ts_color c) {
 	cairo_set_source_rgba(cr, c.r, c.g, c.b, c.a);
 }
@@ -211,9 +224,30 @@ struct wlr_buffer *deco_render_frame(struct ts_server *server, int w, int h, dou
  * colour outside a quarter circle, which gives windows rounded corners
  * without any expensive clipping. corner: 0 top-left, 1 top-right,
  * 2 bottom-right, 3 bottom-left. */
+/* Paint what lies behind a window at this spot: the wallpaper if there is
+ * one, otherwise the desktop colour. ox/oy are the spot's position on the
+ * screen in logical pixels. */
+static void paint_backdrop(cairo_t *cr, struct ts_server *server, struct ts_output *output,
+		double ox, double oy, double scale) {
+	if (output && output->wallpaper_surface) {
+		cairo_pattern_t *pattern = cairo_pattern_create_for_surface(output->wallpaper_surface);
+		cairo_matrix_t matrix;
+		cairo_matrix_init_scale(&matrix, scale, scale);
+		cairo_matrix_translate(&matrix, ox, oy);
+		cairo_pattern_set_matrix(pattern, &matrix);
+		cairo_set_source(cr, pattern);
+		cairo_pattern_destroy(pattern);
+	} else {
+		set_color(cr, server->theme.background);
+	}
+}
+
+/* Corner masks sit on top of the window contents and paint the desktop
+ * outside a quarter circle, which gives windows rounded corners without
+ * any expensive clipping. corner: 0 top-left, 1 top-right, 2 bottom-right,
+ * 3 bottom-left. */
 struct wlr_buffer *deco_render_corner(struct ts_server *server, int corner, double scale,
-		bool focused, bool ssd) {
-	(void)ssd;
+		bool focused, struct ts_output *output, double ox, double oy) {
 	struct ts_theme *t = &server->theme;
 	int size = RADIUS;
 	struct cairo_buffer *buffer = cairo_buffer_create(ceil(size * scale), ceil(size * scale));
@@ -228,7 +262,7 @@ struct wlr_buffer *deco_render_corner(struct ts_server *server, int corner, doub
 	double cx = (corner == 0 || corner == 3) ? size : 0;
 	double cy = (corner == 0 || corner == 1) ? size : 0;
 
-	set_color(cr, t->background);
+	paint_backdrop(cr, server, output, ox, oy, scale);
 	cairo_rectangle(cr, 0, 0, size, size);
 	cairo_new_sub_path(cr);
 	cairo_arc(cr, cx, cy, RADIUS, 0, 2 * M_PI);
@@ -272,7 +306,8 @@ static const char *display_name(void) {
 	return name;
 }
 
-struct wlr_buffer *deco_render_lock(struct ts_server *server, int w, int h, double scale) {
+struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *output,
+		int w, int h, double scale) {
 	struct ts_theme *t = &server->theme;
 	struct cairo_buffer *buffer = cairo_buffer_create(ceil(w * scale), ceil(h * scale));
 	if (buffer == NULL) {
@@ -284,6 +319,13 @@ struct wlr_buffer *deco_render_lock(struct ts_server *server, int w, int h, doub
 
 	set_color(cr, t->background);
 	cairo_paint(cr);
+	if (output && output->wallpaper_surface) {
+		/* The wallpaper, dimmed so the text stays easy to read. */
+		paint_backdrop(cr, server, output, 0, 0, scale);
+		cairo_paint(cr);
+		cairo_set_source_rgba(cr, t->background.r, t->background.g, t->background.b, 0.78);
+		cairo_paint(cr);
+	}
 
 	time_t now = time(NULL);
 	struct tm tm;

@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
@@ -225,27 +226,39 @@ void view_update_frame(struct ts_view *view) {
 			wlr_scene_buffer_set_dest_size(view->frame, b.width, b.height);
 			wlr_buffer_drop(buf);
 		}
-		bool corners_changed = view->frame_focused != focused ||
-			view->frame_scale != scale || view->frame_dirty;
 		view->frame_w = b.width;
 		view->frame_h = b.height;
 		view->frame_scale = scale;
 		view->frame_dirty = false;
-		if (corners_changed || view->corners[0]->buffer == NULL) {
-			for (int i = 0; i < 4; i++) {
-				struct wlr_buffer *cbuf = deco_render_corner(server, i, scale, focused, view->ssd);
-				if (cbuf) {
-					wlr_scene_buffer_set_buffer(view->corners[i], cbuf);
-					wlr_scene_buffer_set_dest_size(view->corners[i], deco_radius(), deco_radius());
-					wlr_buffer_drop(cbuf);
-				}
-			}
-		}
 		view->frame_focused = focused;
+		view->corner_x = INT32_MIN; /* corners are redrawn below */
 	}
 
 	int r = deco_radius();
 	int pos[4][2] = { {0, 0}, {b.width - r, 0}, {b.width - r, b.height - r}, {0, b.height - r} };
+
+	/* Corners show what is behind the window, so with a wallpaper they are
+	 * redrawn whenever the window moves. */
+	struct ts_output *output = view->output;
+	bool has_wallpaper = output && output->wallpaper_surface;
+	if (view->corner_x == INT32_MIN || view->corners[0]->buffer == NULL ||
+			(has_wallpaper && (view->corner_x != b.x || view->corner_y != b.y))) {
+		for (int i = 0; i < 4; i++) {
+			double ox = 0, oy = 0;
+			if (output) {
+				ox = b.x + pos[i][0] - output->full_area.x;
+				oy = b.y + pos[i][1] - output->full_area.y;
+			}
+			struct wlr_buffer *cbuf = deco_render_corner(server, i, scale, focused, output, ox, oy);
+			if (cbuf) {
+				wlr_scene_buffer_set_buffer(view->corners[i], cbuf);
+				wlr_scene_buffer_set_dest_size(view->corners[i], r, r);
+				wlr_buffer_drop(cbuf);
+			}
+		}
+		view->corner_x = b.x;
+		view->corner_y = b.y;
+	}
 	for (int i = 0; i < 4; i++) {
 		bool top = i < 2;
 		bool enabled = !view->floating && !(top && view->ssd);
@@ -324,6 +337,28 @@ void view_focus(struct ts_view *view) {
 	}
 	view_update_frame(view);
 	ipc_send_state(server);
+}
+
+struct ts_view *view_by_id(struct ts_server *server, uint32_t id) {
+	struct ts_view *view;
+	wl_list_for_each(view, &server->views, link) {
+		if (view->id == id && view->mapped) {
+			return view;
+		}
+	}
+	return NULL;
+}
+
+/* Focus a window, going to its workspace first if needed. */
+void view_focus_id(struct ts_server *server, uint32_t id) {
+	struct ts_view *view = view_by_id(server, id);
+	if (view == NULL) {
+		return;
+	}
+	if (view->output && view->workspace != view->output->workspace) {
+		workspace_switch_output(view->output, view->workspace);
+	}
+	view_focus(view);
 }
 
 void focus_top_view(struct ts_server *server) {
@@ -460,7 +495,12 @@ void view_move_to_workspace(struct ts_view *view, int workspace) {
 
 struct ts_view *view_create_common(struct ts_server *server, enum ts_view_type type) {
 	struct ts_view *view = calloc(1, sizeof(*view));
+	if (view == NULL) {
+		wlr_log(WLR_ERROR, "Out of memory");
+		return NULL;
+	}
 	view->node.kind = TS_NODE_VIEW;
+	view->id = ++server->next_view_id;
 	view->server = server;
 	view->type = type;
 	view->tree = wlr_scene_tree_create(server->layer_tiled);
@@ -557,7 +597,7 @@ static void preview_tiled_size(struct ts_server *server, int *w, int *h) {
 	if (output == NULL) {
 		return;
 	}
-	int g = server->config.gaps;
+	int g = output_gaps(output);
 	struct wlr_box area = output->usable_area;
 	int aw = area.width - 2 * g, ah = area.height - 2 * g;
 	int tiled = 0;
@@ -800,6 +840,9 @@ static void new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	struct wlr_xdg_toplevel *toplevel = data;
 
 	struct ts_view *view = view_create_common(server, TS_VIEW_XDG);
+	if (view == NULL) {
+		return;
+	}
 	view->xdg_toplevel = toplevel;
 	wlr_scene_xdg_surface_create(view->content_tree, toplevel->base);
 	toplevel->base->data = view->popup_tree;
@@ -890,6 +933,10 @@ void popup_create(struct wlr_xdg_popup *xdg_popup, struct wlr_scene_tree *parent
 	xdg_popup->base->data = wlr_scene_xdg_surface_create(parent_tree, xdg_popup->base);
 
 	struct ts_popup *popup = calloc(1, sizeof(*popup));
+	if (popup == NULL) {
+		wlr_log(WLR_ERROR, "Out of memory");
+		return;
+	}
 	popup->xdg_popup = xdg_popup;
 	popup->commit.notify = popup_commit;
 	wl_signal_add(&xdg_popup->base->surface->events.commit, &popup->commit);

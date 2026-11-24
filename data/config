@@ -1,20 +1,37 @@
 # Tessera settings for everyone on this computer.
-# Your own settings go in ~/.config/tessera/config and override these.
-# After changing a file, press Super+Shift+R or log out and back in.
+# Use the Settings app to change these; it stores your choices in
+# ~/.config/tessera/config, which overrides this file.
+# This file is rewritten when Tessera is updated.
 
-# Colours: dark or light, and the highlight colour (#rrggbb).
+# Colours: dark or light. Highlight colour: orange, blue, teal, green,
+# yellow, red, pink, purple, slate, or #rrggbb.
 theme=dark
-# accent=#f0883e
+accent=orange
 
-# Space between windows, in pixels.
-gaps=14
+# Background: none, mosaic, or the path of a PNG picture.
+wallpaper=none
 
-# Screen size: auto, or a number such as 1, 1.25, 1.5 or 2.
+# Bar and gaps: auto (compact on small screens), compact or comfortable.
+layout_size=auto
+# Space between windows in pixels; leave unset to follow layout_size.
+# gaps=14
+animations=true
+
+# Size of everything: auto, or 1, 1.25, 1.5, 1.75, 2.
 scale=auto
+
+# Night light: off, scheduled or always.
+night_light=off
+night_light_from=20:00
+night_light_to=07:00
+night_light_temperature=4000
 
 # Touchpad.
 tap_to_click=true
 natural_scroll=false
+pointer_speed=0
+gestures=true
+swipe_direction=natural
 
 # Keyboard. Empty means "use what was chosen when Debian was installed".
 keyboard_layout=

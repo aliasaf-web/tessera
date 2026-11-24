@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <stdlib.h>
+#include <string.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/util/log.h>
@@ -54,6 +55,13 @@ void arrange_layers(struct ts_output *output) {
 	if (output->background) {
 		wlr_scene_node_set_position(&output->background->node, full.x, full.y);
 		wlr_scene_rect_set_size(output->background, full.width, full.height);
+	}
+	if (strcmp(server->config.wallpaper, "none") != 0 &&
+			(output->wallpaper_w != full.width || output->wallpaper_h != full.height ||
+			output->wallpaper_scale != output->wlr_output->scale)) {
+		wallpaper_output(output);
+	} else if (output->wallpaper) {
+		wlr_scene_node_set_position(&output->wallpaper->node, full.x, full.y);
 	}
 
 	arrange_output(output);
@@ -184,6 +192,11 @@ static void new_layer_surface(struct wl_listener *listener, void *data) {
 	struct ts_output *output = ls->output->data;
 
 	struct ts_layer_surface *layer = calloc(1, sizeof(*layer));
+	if (layer == NULL) {
+		wlr_log(WLR_ERROR, "Out of memory");
+		wlr_layer_surface_v1_destroy(ls);
+		return;
+	}
 	layer->node.kind = TS_NODE_LAYER;
 	layer->server = server;
 	layer->output = output;

@@ -1,10 +1,8 @@
 """Colours, the shell's stylesheet and the shared desktop settings."""
 
 import os
-import shutil
-import subprocess
 
-from gi.repository import Gdk, Gtk
+from gi.repository import Gdk, Gio, Gtk
 
 PALETTES = {
     "dark": {
@@ -30,6 +28,29 @@ PALETTES = {
         "accent": "#c95a22",
     },
 }
+
+
+# Named accent colours, tuned for dark and light backgrounds. The window
+# manager uses the same table (compositor/src/config.c).
+ACCENTS = {
+    "orange": ("#f0883e", "#c95a22"),
+    "blue": ("#5b9cf5", "#2f6fd6"),
+    "teal": ("#3cc8b4", "#13897a"),
+    "green": ("#57c272", "#2e8b47"),
+    "yellow": ("#e8b931", "#a87b00"),
+    "red": ("#f0605a", "#c83a35"),
+    "pink": ("#ec7fb2", "#c24d86"),
+    "purple": ("#a77bff", "#7a4de0"),
+    "slate": ("#8fa3b8", "#5a6b7d"),
+}
+
+
+def accent_hex(value, dark):
+    if value in ACCENTS:
+        return ACCENTS[value][0 if dark else 1]
+    if value.startswith("#") and len(value) in (7, 9):
+        return value[:7]
+    return ACCENTS["orange"][0 if dark else 1]
 
 
 def config_path():
@@ -96,9 +117,8 @@ class Theme:
         cfg = read_config()
         self.name = "light" if cfg.get("theme") == "light" else "dark"
         colors = dict(PALETTES[self.name])
-        accent = cfg.get("accent", "")
-        if accent.startswith("#") and len(accent) in (7, 9):
-            colors["accent"] = accent[:7]
+        self.accent_name = cfg.get("accent", "orange") or "orange"
+        colors["accent"] = accent_hex(self.accent_name, self.dark)
         self.colors = colors
         css = STYLESHEET
         for key, value in colors.items():
@@ -112,11 +132,6 @@ class Theme:
         if settings is not None:
             settings.set_property("gtk-application-prefer-dark-theme", self.dark)
 
-    def set_dark(self, dark):
-        write_config_value("theme", "dark" if dark else "light")
-        apply_app_theme(dark)
-        self.reload()
-
 
 def on_accent(hex_color):
     r = int(hex_color[1:3], 16) / 255
@@ -126,20 +141,32 @@ def on_accent(hex_color):
     return "#111111" if lum > 0.55 else "#ffffff"
 
 
-def apply_app_theme(dark):
-    """Tell GTK, libadwaita and Qt apps about light or dark mode."""
-    gsettings = shutil.which("gsettings")
-    if gsettings:
-        scheme = "prefer-dark" if dark else "prefer-light"
+_interface_settings = None
+
+
+def apply_app_theme(dark, accent="orange"):
+    """Tell GTK and libadwaita apps about light or dark mode and the accent."""
+    global _interface_settings
+    source = Gio.SettingsSchemaSource.get_default()
+    schema = source.lookup("org.gnome.desktop.interface", True) if source else None
+    if schema is not None:
+        if _interface_settings is None:
+            _interface_settings = Gio.Settings.new("org.gnome.desktop.interface")
         gtk3 = "adw-gtk3-dark" if dark else "adw-gtk3"
         if not os.path.isdir(f"/usr/share/themes/{gtk3}"):
             gtk3 = "Adwaita-dark" if dark else "Adwaita"
         icons = "Papirus-Dark" if dark else "Papirus"
         if not os.path.isdir(f"/usr/share/icons/{icons}"):
             icons = "Adwaita"
-        for key, value in (("color-scheme", scheme), ("gtk-theme", gtk3), ("icon-theme", icons)):
-            subprocess.run([gsettings, "set", "org.gnome.desktop.interface", key, value],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        values = [("color-scheme", "prefer-dark" if dark else "prefer-light"),
+                  ("gtk-theme", gtk3), ("icon-theme", icons)]
+        if accent in ACCENTS:
+            # libadwaita apps use the same named accent colours.
+            values.append(("accent-color", accent))
+        for key, value in values:
+            # Older systems may not know every key (accent-color is recent).
+            if schema.has_key(key) and _interface_settings.get_string(key) != value:
+                _interface_settings.set_string(key, value)
     # GTK 3 apps also read this file.
     path = os.path.expanduser("~/.config/gtk-3.0/settings.ini")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -255,6 +282,45 @@ button.status:hover, button.status.open {
 .status label.percent {
   font-size: 13px;
   color: @dim@;
+}
+
+.compact button.round {
+  min-width: 36px;
+  min-height: 36px;
+}
+
+.compact .workspaces, .compact button.ws-hit {
+  min-height: 36px;
+}
+
+.compact button.status {
+  min-height: 36px;
+  padding: 0 14px;
+}
+
+/* ---------- Window switcher ---------- */
+
+.switcher {
+  padding: 16px;
+}
+
+button.switch-item {
+  min-width: 104px;
+  padding: 12px 8px;
+  border-radius: 16px;
+  background: transparent;
+  border: 2px solid transparent;
+  color: @text@;
+  box-shadow: none;
+}
+
+button.switch-item.selected {
+  background: @surface2@;
+  border-color: @accent@;
+}
+
+button.switch-item label {
+  font-size: 12px;
 }
 
 /* ---------- Cards (launcher, quick settings, help) ---------- */

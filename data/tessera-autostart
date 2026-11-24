@@ -14,15 +14,15 @@ state="${XDG_STATE_HOME:-$HOME/.local/state}/tessera"
 mkdir -p "$state"
 
 # The bar, launcher and quick settings. Restart them if they ever stop
-# while the desktop is still running.
+# while this desktop is still running (TESSERA_PID is the window manager).
 (
 	while :; do
 		started=$(date +%s)
 		tessera-shell >>"$state/shell.log" 2>&1
-		tessera msg state >/dev/null 2>&1 || break
 		if [ $(( $(date +%s) - started )) -lt 10 ]; then
 			sleep 5
 		fi
+		kill -0 "${TESSERA_PID:-}" 2>/dev/null || break
 	done
 ) &
 

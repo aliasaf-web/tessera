@@ -23,7 +23,7 @@ static void lock_redraw(struct ts_server *server) {
 			continue;
 		}
 		struct wlr_box area = output->full_area;
-		struct wlr_buffer *buf = deco_render_lock(server, area.width, area.height,
+		struct wlr_buffer *buf = deco_render_lock(server, output, area.width, area.height,
 			output->wlr_output->scale);
 		if (buf) {
 			wlr_scene_buffer_set_buffer(ls->buffer, buf);
@@ -42,6 +42,10 @@ void lock_arrange(struct ts_server *server) {
 	wl_list_for_each(output, &server->outputs, link) {
 		if (output->lock_surface == NULL) {
 			struct ts_lock_surface *ls = calloc(1, sizeof(*ls));
+			if (ls == NULL) {
+				wlr_log(WLR_ERROR, "Out of memory");
+				continue;
+			}
 			ls->node.kind = TS_NODE_LOCK;
 			ls->output = output;
 			ls->tree = wlr_scene_tree_create(server->layer_lock);
@@ -128,6 +132,9 @@ static int pam_conversation(int num, const struct pam_message **msg,
 				msg[i]->msg_style == PAM_PROMPT_ECHO_ON) {
 			replies[i].resp = strdup(data->password);
 			if (replies[i].resp == NULL) {
+				for (int j = 0; j < i; j++) {
+					free(replies[j].resp);
+				}
 				free(replies);
 				return PAM_BUF_ERR;
 			}

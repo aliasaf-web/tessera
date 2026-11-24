@@ -117,7 +117,10 @@ def click_outside_closes(backdrop, content, close):
 
 
 def on_escape(window, callback):
+    """Call `callback` when Escape is pressed, even while a text box has the
+    keyboard (text boxes would otherwise use Escape themselves)."""
     ctrl = Gtk.EventControllerKey()
+    ctrl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
 
     def key(c, keyval, keycode, state):
         from gi.repository import Gdk

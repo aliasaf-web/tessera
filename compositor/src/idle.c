@@ -88,6 +88,10 @@ static void new_inhibitor(struct wl_listener *listener, void *data) {
 	struct ts_server *server = wl_container_of(listener, server, new_inhibitor);
 	struct wlr_idle_inhibitor_v1 *wlr_inh = data;
 	struct inhibitor *inh = calloc(1, sizeof(*inh));
+	if (inh == NULL) {
+		wlr_log(WLR_ERROR, "Out of memory");
+		return;
+	}
 	inh->server = server;
 	inh->destroy.notify = inhibitor_destroy;
 	wl_signal_add(&wlr_inh->events.destroy, &inh->destroy);

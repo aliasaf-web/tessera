@@ -9,6 +9,7 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_pointer_gestures_v1.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
@@ -91,19 +92,6 @@ static void send_key_event(struct ts_server *server, const char *action) {
 	ipc_broadcast(server, line);
 }
 
-static void focus_cycle(struct ts_server *server) {
-	/* Bring the least recently used visible window forward. */
-	struct ts_view *view, *last = NULL;
-	wl_list_for_each(view, &server->focus_stack, focus_link) {
-		if (view_visible(view)) {
-			last = view;
-		}
-	}
-	if (last && last != server->focused_view) {
-		view_focus(last);
-	}
-}
-
 static bool handle_media_key(struct ts_server *server, xkb_keysym_t sym) {
 	switch (sym) {
 	case XKB_KEY_XF86AudioRaiseVolume:
@@ -169,7 +157,7 @@ static bool handle_binding(struct ts_server *server, uint32_t mods, xkb_keysym_t
 			return true;
 		}
 		if (sym == XKB_KEY_Tab) {
-			focus_cycle(server);
+			switcher_step(server, WLR_MODIFIER_ALT, shift ? -1 : 1);
 			return true;
 		}
 	}
@@ -205,6 +193,10 @@ static bool handle_binding(struct ts_server *server, uint32_t mods, xkb_keysym_t
 		break;
 	default:
 		break;
+	}
+	if (dx && ctrl) {
+		workspace_step(server, dx);
+		return true;
 	}
 	if (dx || dy) {
 		struct ts_view *target = view_in_direction(server, focused, dx, dy);
@@ -253,7 +245,7 @@ static bool handle_binding(struct ts_server *server, uint32_t mods, xkb_keysym_t
 		}
 		return true;
 	case XKB_KEY_Tab:
-		focus_cycle(server);
+		switcher_step(server, WLR_MODIFIER_LOGO, shift ? -1 : 1);
 		return true;
 	case XKB_KEY_l:
 		lock_engage(server);
@@ -336,6 +328,21 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 	}
 
 	bool handled = false;
+	if (pressed && server->switcher_active) {
+		xkb_keysym_t sym = xkb_state_key_get_one_sym(state, keycode);
+		if (sym == XKB_KEY_Escape) {
+			switcher_finish(server, false);
+			return;
+		}
+		if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
+			switcher_finish(server, true);
+			return;
+		}
+		if (sym == XKB_KEY_Left || sym == XKB_KEY_Right) {
+			switcher_step(server, server->switcher_mod, sym == XKB_KEY_Left ? -1 : 1);
+			return;
+		}
+	}
 	if (pressed) {
 		bool super_key = false;
 		for (int i = 0; i < nraw; i++) {
@@ -372,9 +379,10 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 
 static void keyboard_handle_modifiers(struct wl_listener *listener, void *data) {
 	struct ts_keyboard *keyboard = wl_container_of(listener, keyboard, modifiers);
-	wlr_seat_set_keyboard(keyboard->server->seat, keyboard->wlr_keyboard);
-	wlr_seat_keyboard_notify_modifiers(keyboard->server->seat,
-		&keyboard->wlr_keyboard->modifiers);
+	struct ts_server *server = keyboard->server;
+	wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
+	wlr_seat_keyboard_notify_modifiers(server->seat, &keyboard->wlr_keyboard->modifiers);
+	switcher_modifiers(server, wlr_keyboard_get_modifiers(keyboard->wlr_keyboard));
 }
 
 static void update_capabilities(struct ts_server *server);
@@ -388,12 +396,20 @@ static void keyboard_handle_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&keyboard->link);
 	free(keyboard);
 	update_capabilities(server);
+	/* A keyboard unplugged while choosing a window can't release Alt. */
+	if (server->switcher_active) {
+		switcher_finish(server, true);
+	}
 }
 
 static void new_keyboard_ex(struct ts_server *server, struct wlr_input_device *device,
 		bool set_keymap) {
 	struct wlr_keyboard *wlr_keyboard = wlr_keyboard_from_input_device(device);
 	struct ts_keyboard *keyboard = calloc(1, sizeof(*keyboard));
+	if (keyboard == NULL) {
+		wlr_log(WLR_ERROR, "Out of memory");
+		return;
+	}
 	keyboard->server = server;
 	keyboard->wlr_keyboard = wlr_keyboard;
 
@@ -471,11 +487,38 @@ static void configure_libinput(struct ts_server *server, struct wlr_input_device
 		libinput_device_config_middle_emulation_set_enabled(li,
 			LIBINPUT_CONFIG_MIDDLE_EMULATION_ENABLED);
 	}
+	if (libinput_device_config_accel_is_available(li)) {
+		libinput_device_config_accel_set_speed(li, server->config.pointer_speed);
+	}
+}
+
+static void pointer_destroy(struct wl_listener *listener, void *data) {
+	struct ts_pointer *pointer = wl_container_of(listener, pointer, destroy);
+	wl_list_remove(&pointer->destroy.link);
+	wl_list_remove(&pointer->link);
+	free(pointer);
 }
 
 static void new_pointer(struct ts_server *server, struct wlr_input_device *device) {
 	configure_libinput(server, device);
 	wlr_cursor_attach_input_device(server->cursor, device);
+	struct ts_pointer *pointer = calloc(1, sizeof(*pointer));
+	if (pointer == NULL) {
+		wlr_log(WLR_ERROR, "Out of memory");
+		return;
+	}
+	pointer->server = server;
+	pointer->device = device;
+	pointer->destroy.notify = pointer_destroy;
+	wl_signal_add(&device->events.destroy, &pointer->destroy);
+	wl_list_insert(&server->pointers, &pointer->link);
+}
+
+void pointers_apply_config(struct ts_server *server) {
+	struct ts_pointer *pointer;
+	wl_list_for_each(pointer, &server->pointers, link) {
+		configure_libinput(server, pointer->device);
+	}
 }
 
 static void new_input(struct wl_listener *listener, void *data) {
@@ -916,6 +959,122 @@ static void cursor_frame(struct wl_listener *listener, void *data) {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Touchpad gestures                                                        */
+/* ---------------------------------------------------------------------- */
+
+#define SWIPE_DISTANCE 100.0
+
+/* Three-finger swipes belong to the desktop; everything else (pinch to
+ * zoom, other swipes) goes to the app under the cursor. */
+static void swipe_begin(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, swipe_begin);
+	struct wlr_pointer_swipe_begin_event *event = data;
+	notify_activity(server);
+	if (server->locked) {
+		return;
+	}
+	if (server->config.gestures && event->fingers == 3) {
+		server->swipe_active = true;
+		server->swipe_dx = 0;
+		server->swipe_dy = 0;
+		return;
+	}
+	wlr_pointer_gestures_v1_send_swipe_begin(server->pointer_gestures, server->seat,
+		event->time_msec, event->fingers);
+}
+
+static void swipe_update(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, swipe_update);
+	struct wlr_pointer_swipe_update_event *event = data;
+	notify_activity(server);
+	if (server->swipe_active) {
+		server->swipe_dx += event->dx;
+		server->swipe_dy += event->dy;
+		return;
+	}
+	if (!server->locked) {
+		wlr_pointer_gestures_v1_send_swipe_update(server->pointer_gestures, server->seat,
+			event->time_msec, event->dx, event->dy);
+	}
+}
+
+static void swipe_end(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, swipe_end);
+	struct wlr_pointer_swipe_end_event *event = data;
+	if (!server->swipe_active) {
+		if (!server->locked) {
+			wlr_pointer_gestures_v1_send_swipe_end(server->pointer_gestures, server->seat,
+				event->time_msec, event->cancelled);
+		}
+		return;
+	}
+	server->swipe_active = false;
+	if (event->cancelled || server->locked) {
+		return;
+	}
+	double dx = server->swipe_dx, dy = server->swipe_dy;
+	double adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+	if (adx >= SWIPE_DISTANCE && adx > ady) {
+		/* Fingers moving left bring in the workspace on the right. */
+		int direction = dx < 0 ? 1 : -1;
+		if (server->config.swipe_reversed) {
+			direction = -direction;
+		}
+		workspace_step(server, direction);
+	} else if (ady >= SWIPE_DISTANCE && ady > adx) {
+		send_key_event(server, dy < 0 ? "launcher-show" : "launcher-hide");
+	}
+}
+
+static void pinch_begin(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, pinch_begin);
+	struct wlr_pointer_pinch_begin_event *event = data;
+	notify_activity(server);
+	if (!server->locked) {
+		wlr_pointer_gestures_v1_send_pinch_begin(server->pointer_gestures, server->seat,
+			event->time_msec, event->fingers);
+	}
+}
+
+static void pinch_update(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, pinch_update);
+	struct wlr_pointer_pinch_update_event *event = data;
+	notify_activity(server);
+	if (!server->locked) {
+		wlr_pointer_gestures_v1_send_pinch_update(server->pointer_gestures, server->seat,
+			event->time_msec, event->dx, event->dy, event->scale, event->rotation);
+	}
+}
+
+static void pinch_end(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, pinch_end);
+	struct wlr_pointer_pinch_end_event *event = data;
+	if (!server->locked) {
+		wlr_pointer_gestures_v1_send_pinch_end(server->pointer_gestures, server->seat,
+			event->time_msec, event->cancelled);
+	}
+}
+
+static void hold_begin(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, hold_begin);
+	struct wlr_pointer_hold_begin_event *event = data;
+	notify_activity(server);
+	if (!server->locked) {
+		wlr_pointer_gestures_v1_send_hold_begin(server->pointer_gestures, server->seat,
+			event->time_msec, event->fingers);
+	}
+}
+
+static void hold_end(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, hold_end);
+	struct wlr_pointer_hold_end_event *event = data;
+	if (!server->locked) {
+		wlr_pointer_gestures_v1_send_hold_end(server->pointer_gestures, server->seat,
+			event->time_msec, event->cancelled);
+	}
+}
+
+/* ---------------------------------------------------------------------- */
 /* Seat requests                                                            */
 /* ---------------------------------------------------------------------- */
 
@@ -985,6 +1144,10 @@ static void start_drag(struct wl_listener *listener, void *data) {
 		return;
 	}
 	struct drag_icon *icon = calloc(1, sizeof(*icon));
+	if (icon == NULL) {
+		wlr_log(WLR_ERROR, "Out of memory");
+		return;
+	}
 	icon->tree = wlr_scene_drag_icon_create(server->drag_icons, drag->icon);
 	icon->destroy.notify = drag_icon_destroy;
 	wl_signal_add(&drag->icon->events.destroy, &icon->destroy);
@@ -1015,8 +1178,25 @@ void input_init(struct ts_server *server) {
 	wl_signal_add(&server->cursor->events.axis, &server->cursor_axis);
 	server->cursor_frame.notify = cursor_frame;
 	wl_signal_add(&server->cursor->events.frame, &server->cursor_frame);
+	server->swipe_begin.notify = swipe_begin;
+	wl_signal_add(&server->cursor->events.swipe_begin, &server->swipe_begin);
+	server->swipe_update.notify = swipe_update;
+	wl_signal_add(&server->cursor->events.swipe_update, &server->swipe_update);
+	server->swipe_end.notify = swipe_end;
+	wl_signal_add(&server->cursor->events.swipe_end, &server->swipe_end);
+	server->pinch_begin.notify = pinch_begin;
+	wl_signal_add(&server->cursor->events.pinch_begin, &server->pinch_begin);
+	server->pinch_update.notify = pinch_update;
+	wl_signal_add(&server->cursor->events.pinch_update, &server->pinch_update);
+	server->pinch_end.notify = pinch_end;
+	wl_signal_add(&server->cursor->events.pinch_end, &server->pinch_end);
+	server->hold_begin.notify = hold_begin;
+	wl_signal_add(&server->cursor->events.hold_begin, &server->hold_begin);
+	server->hold_end.notify = hold_end;
+	wl_signal_add(&server->cursor->events.hold_end, &server->hold_end);
 
 	wl_list_init(&server->keyboards);
+	wl_list_init(&server->pointers);
 	server->new_input.notify = new_input;
 	wl_signal_add(&server->backend->events.new_input, &server->new_input);
 	server->seat = wlr_seat_create(server->display, "seat0");

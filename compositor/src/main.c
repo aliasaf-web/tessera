@@ -29,7 +29,7 @@
 #include <wlr/util/log.h>
 #include "server.h"
 
-#define TESSERA_VERSION "1.0.0"
+#define TESSERA_VERSION "1.1.0"
 
 void server_spawn(const char *cmd) {
 	if (cmd == NULL || cmd[0] == '\0') {
@@ -66,10 +66,7 @@ static void handle_activate(struct wl_listener *listener, void *data) {
 	if (view == NULL || !view->mapped) {
 		return;
 	}
-	if (view->workspace != view->output->workspace) {
-		workspace_switch(server, view->workspace);
-	}
-	view_focus(view);
+	view_focus_id(server, view->id);
 }
 
 static void usage(const char *name) {
@@ -148,7 +145,7 @@ int main(int argc, char *argv[]) {
 	wlr_screencopy_manager_v1_create(server.display);
 	wlr_export_dmabuf_manager_v1_create(server.display);
 	wlr_alpha_modifier_v1_create(server.display);
-	wlr_pointer_gestures_v1_create(server.display);
+	server.pointer_gestures = wlr_pointer_gestures_v1_create(server.display);
 	struct wlr_xdg_foreign_registry *foreign = wlr_xdg_foreign_registry_create(server.display);
 	wlr_xdg_foreign_v1_create(server.display, foreign);
 	wlr_xdg_foreign_v2_create(server.display, foreign);
@@ -182,6 +179,7 @@ int main(int argc, char *argv[]) {
 	wl_signal_add(&server.xdg_activation->events.request_activate, &server.request_activate);
 
 	output_init(&server);
+	layout_init(&server);
 	views_init(&server);
 	layers_init(&server);
 	input_init(&server);
@@ -192,7 +190,7 @@ int main(int argc, char *argv[]) {
 		wlr_backend_destroy(server.backend);
 		return 1;
 	}
-	server.socket_name = strdup(socket);
+	server.socket_name = socket;
 
 	if (!wlr_backend_start(server.backend)) {
 		wlr_log(WLR_ERROR, "Could not start the backend");
@@ -205,11 +203,16 @@ int main(int argc, char *argv[]) {
 	setenv("XDG_CURRENT_DESKTOP", "Tessera", true);
 	setenv("XDG_SESSION_DESKTOP", "tessera", true);
 	setenv("XDG_SESSION_TYPE", "wayland", true);
+	/* Lets helper scripts tell when this desktop has ended. */
+	char pid[16];
+	snprintf(pid, sizeof(pid), "%ld", (long)getpid());
+	setenv("TESSERA_PID", pid, true);
 
 #if TESSERA_XWAYLAND
 	xwayland_init(&server);
 #endif
 	ipc_init(&server);
+	night_light_init(&server);
 	lock_init(&server);
 	idle_init(&server);
 	logind_init(&server);
@@ -239,6 +242,5 @@ int main(int argc, char *argv[]) {
 	wlr_renderer_destroy(server.renderer);
 	wlr_backend_destroy(server.backend);
 	wl_display_destroy(server.display);
-	free(server.socket_name);
 	return 0;
 }

@@ -12,7 +12,8 @@ read -r answer </dev/tty || answer=""
 case "$answer" in y|Y|yes) ;; *) exit 1 ;; esac
 
 sudo rm -f "$PREFIX/bin/tessera" "$PREFIX/bin/tessera-session" "$PREFIX/bin/tessera-login" \
-	"$PREFIX/bin/tessera-autostart" "$PREFIX/bin/tessera-shell"
+	"$PREFIX/bin/tessera-autostart" "$PREFIX/bin/tessera-shell" "$PREFIX/bin/tessera-settings" \
+	"$PREFIX/bin/tessera-update" "$PREFIX/share/applications/org.tessera.Settings.desktop"
 sudo rm -rf "$PREFIX/share/tessera"
 sudo rm -f /usr/share/wayland-sessions/tessera.desktop /etc/pam.d/tessera \
 	/etc/xdg/xdg-desktop-portal/tessera-portals.conf /etc/polkit-1/rules.d/50-tessera.rules

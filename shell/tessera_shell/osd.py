@@ -1,6 +1,6 @@
 """The small pop-up that shows volume or brightness while you change it."""
 
-from gi.repository import GLib, Gtk
+from gi.repository import GLib, Gtk, Gtk4LayerShell as LayerShell
 
 from .layer import Edge, Layer, hbox, icon, layer_window, set_monitor
 
@@ -8,8 +8,8 @@ from .layer import Edge, Layer, hbox, icon, layer_window, set_monitor
 class Osd:
     def __init__(self, shell):
         self.shell = shell
-        self.window = layer_window(shell.app, "tessera-osd", Layer.OVERLAY,
-                                   (Edge.BOTTOM,), {Edge.BOTTOM: 12 + 44 + 24})
+        self.window = layer_window(shell.app, "tessera-osd", Layer.OVERLAY, (Edge.BOTTOM,))
+        self.place()
         self.icon = icon("audio-volume-high-symbolic", 20)
         self.level = Gtk.LevelBar()
         self.level.add_css_class("osd-level")
@@ -24,6 +24,10 @@ class Osd:
         box.add_css_class("osd")
         self.window.set_child(box)
         self.timer = None
+
+    def place(self):
+        size = self.shell.metrics(None)
+        LayerShell.set_margin(self.window, Edge.BOTTOM, size["margin"] + size["bar"] + 24)
 
     def show(self, icon_name, value, monitor=None):
         self.icon.set_from_icon_name(icon_name)

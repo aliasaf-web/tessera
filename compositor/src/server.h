@@ -68,11 +68,21 @@ struct ts_config {
 	char kb_model[64];
 	bool tap_to_click;
 	bool natural_scroll;
-	double scale; /* 0 = automatic */
-	int gaps;
+	double pointer_speed;  /* -1 (slow) to 1 (fast) */
+	bool gestures;         /* three-finger swipes */
+	bool swipe_reversed;
+	bool animations;
+	double scale;          /* 0 = automatic */
+	int gaps;              /* -1 = follow the layout size */
+	char layout_size[16];  /* auto, compact or comfortable */
 	int idle_lock_minutes;
 	int idle_screen_off_minutes;
 	bool lock_on_start;
+	char night_light[16];  /* off, scheduled or always */
+	int night_from;        /* minutes after midnight */
+	int night_to;
+	int night_temperature; /* kelvin */
+	char wallpaper[512];   /* none, mosaic, or a PNG file */
 	char terminal[256];
 	char files[256];
 	char browser[256];
@@ -105,6 +115,10 @@ struct ts_output {
 	struct wl_list layers[4];   /* ts_layer_surface.link, by layer */
 	struct ts_lock_surface *lock_surface;
 	bool dpms_off;
+	struct wlr_scene_buffer *wallpaper;
+	void *wallpaper_surface; /* cairo_surface_t, for the rounded corners */
+	int wallpaper_w, wallpaper_h;
+	double wallpaper_scale;
 
 	struct wl_listener frame;
 	struct wl_listener request_state;
@@ -113,6 +127,7 @@ struct ts_output {
 
 struct ts_view {
 	struct ts_node node;
+	uint32_t id;               /* stable number used by the switcher */
 	struct wl_list link;       /* ts_server.views, tiling order */
 	struct wl_list focus_link; /* ts_server.focus_stack, most recent first */
 	struct ts_server *server;
@@ -146,6 +161,7 @@ struct ts_view {
 	struct wlr_box float_box;  /* remembered floating position */
 	struct wlr_box content;    /* content box relative to box */
 	int frame_w, frame_h, frame_focused, frame_hover_close;
+	int corner_x, corner_y;
 	double frame_scale;
 
 	struct wlr_xdg_toplevel_decoration_v1 *decoration;
@@ -196,6 +212,13 @@ struct ts_layer_surface {
 	struct wl_listener new_popup;
 };
 
+struct ts_pointer {
+	struct wl_list link;
+	struct ts_server *server;
+	struct wlr_input_device *device;
+	struct wl_listener destroy;
+};
+
 struct ts_keyboard {
 	struct wl_list link;
 	struct ts_server *server;
@@ -212,13 +235,17 @@ struct ts_lock_surface {
 	struct wlr_scene_buffer *buffer;
 };
 
+/* Longest request line, including its newline. */
+#define TS_IPC_LINE_MAX 1024
+
 struct ts_ipc_client {
 	struct wl_list link;
 	struct ts_server *server;
 	int fd;
 	struct wl_event_source *source;
 	bool subscribed;
-	char buf[1024];
+	bool discarding; /* skipping the rest of a request that was too long */
+	char buf[TS_IPC_LINE_MAX];
 	size_t len;
 };
 
@@ -292,6 +319,7 @@ struct ts_server {
 	struct wl_listener request_start_drag;
 	struct wl_listener start_drag;
 	struct wl_list keyboards;
+	struct wl_list pointers;
 	struct wl_listener new_output;
 
 	enum ts_cursor_mode cursor_mode;
@@ -307,6 +335,37 @@ struct ts_server {
 
 	bool super_alone;
 	uint32_t super_keycode;
+	uint32_t next_view_id;
+
+	/* Three-finger swipes */
+	struct wlr_pointer_gestures_v1 *pointer_gestures;
+	struct wl_listener swipe_begin;
+	struct wl_listener swipe_update;
+	struct wl_listener swipe_end;
+	struct wl_listener pinch_begin;
+	struct wl_listener pinch_update;
+	struct wl_listener pinch_end;
+	struct wl_listener hold_begin;
+	struct wl_listener hold_end;
+	bool swipe_active;
+	double swipe_dx, swipe_dy;
+
+	/* Workspace slide animation */
+	struct {
+		bool active;
+		struct ts_output *output;
+		int from, to, dir;
+		uint32_t start_ms;
+		struct wl_event_source *timer;
+	} ws_anim;
+
+	/* Alt+Tab window switcher */
+	bool switcher_active;
+	uint32_t switcher_mod;
+	uint32_t switcher_ids[32];
+	int switcher_count;
+	int switcher_sel;
+	uint32_t switcher_prev_id;
 
 	/* Lock screen */
 	bool locked;
@@ -318,6 +377,12 @@ struct ts_server {
 	int auth_fd;
 	struct wl_event_source *auth_source;
 	struct wl_event_source *clock_timer;
+
+	/* Night light */
+	bool night_active;
+	int night_override;      /* 0 follow the schedule, 1 on, -1 off */
+	bool night_scheduled;
+	struct wl_event_source *night_timer;
 
 	/* Idle */
 	struct wl_event_source *idle_timer;
@@ -336,7 +401,7 @@ struct ts_server {
 
 	struct ts_config config;
 	struct ts_theme theme;
-	char *socket_name;
+	const char *socket_name; /* owned by the display */
 };
 
 /* main.c */
@@ -345,12 +410,15 @@ void server_spawn(const char *cmd);
 /* config.c */
 void config_load(struct ts_server *server);
 void theme_from_config(struct ts_server *server);
+bool output_is_compact(struct ts_output *output);
+int output_gaps(struct ts_output *output);
 
 /* output.c */
 void output_init(struct ts_server *server);
 struct ts_output *output_at(struct ts_server *server, double lx, double ly);
 struct ts_output *output_focused(struct ts_server *server);
 void output_set_dpms(struct ts_server *server, bool on);
+void outputs_apply_config(struct ts_server *server);
 
 /* layer.c */
 void layers_init(struct ts_server *server);
@@ -380,6 +448,8 @@ void view_get_geometry(struct ts_view *view, struct wlr_box *geo);
 void view_send_size(struct ts_view *view, int width, int height);
 void view_fit_floating(struct ts_view *view);
 void views_redraw_frames(struct ts_server *server);
+struct ts_view *view_by_id(struct ts_server *server, uint32_t id);
+void view_focus_id(struct ts_server *server, uint32_t id);
 void focus_top_view(struct ts_server *server);
 #if TESSERA_XWAYLAND
 void xwayland_init(struct ts_server *server);
@@ -389,6 +459,10 @@ void xwayland_init(struct ts_server *server);
 void arrange_output(struct ts_output *output);
 void arrange_all(struct ts_server *server);
 void workspace_switch(struct ts_server *server, int workspace);
+void workspace_switch_output(struct ts_output *output, int workspace);
+void workspace_step(struct ts_server *server, int direction);
+void layout_init(struct ts_server *server);
+void layout_output_destroyed(struct ts_output *output);
 bool view_visible(struct ts_view *view);
 struct ts_view *view_in_direction(struct ts_server *server, struct ts_view *from, int dx, int dy);
 void view_swap(struct ts_view *a, struct ts_view *b);
@@ -400,6 +474,7 @@ void input_init(struct ts_server *server);
 void cursor_rebase(struct ts_server *server);
 void seat_focus_surface(struct ts_server *server, struct wlr_surface *surface);
 void keyboard_apply_config(struct ts_server *server);
+void pointers_apply_config(struct ts_server *server);
 void notify_activity(struct ts_server *server);
 void input_begin_move(struct ts_view *view);
 void input_begin_resize(struct ts_view *view, uint32_t edges);
@@ -409,8 +484,10 @@ void input_view_gone(struct ts_view *view);
 struct wlr_buffer *deco_render_frame(struct ts_server *server, int w, int h, double scale,
 	const char *title, bool focused, bool ssd, bool hover_close, bool floating);
 struct wlr_buffer *deco_render_corner(struct ts_server *server, int corner, double scale,
-	bool focused, bool ssd);
-struct wlr_buffer *deco_render_lock(struct ts_server *server, int w, int h, double scale);
+	bool focused, struct ts_output *output, double ox, double oy);
+struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *output,
+	int w, int h, double scale);
+struct wlr_buffer *deco_buffer_from_surface(void *cairo_surface);
 int deco_titlebar_height(void);
 int deco_border(void);
 int deco_radius(void);
@@ -421,8 +498,14 @@ void ipc_init(struct ts_server *server);
 void config_reload(struct ts_server *server);
 void ipc_finish(struct ts_server *server);
 void ipc_broadcast(struct ts_server *server, const char *json_line);
+void ipc_json_escape(char *out, size_t size, const char *in);
 void ipc_send_state(struct ts_server *server);
 int ipc_client_main(int argc, char **argv);
+
+/* switcher.c */
+void switcher_step(struct ts_server *server, uint32_t modifier, int delta);
+void switcher_finish(struct ts_server *server, bool commit);
+void switcher_modifiers(struct ts_server *server, uint32_t modifiers);
 
 /* lock.c */
 void lock_init(struct ts_server *server);
@@ -431,6 +514,17 @@ void lock_engage(struct ts_server *server);
 bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepoint);
 void lock_arrange(struct ts_server *server);
 void lock_output_destroyed(struct ts_output *output);
+
+/* nightlight.c */
+void night_light_init(struct ts_server *server);
+void night_light_update(struct ts_server *server, bool force);
+void night_light_set(struct ts_server *server, bool on);
+void night_light_apply_output(struct ts_output *output);
+
+/* wallpaper.c */
+void wallpaper_update(struct ts_server *server);
+void wallpaper_output(struct ts_output *output);
+void wallpaper_output_destroyed(struct ts_output *output);
 
 /* idle.c */
 void idle_init(struct ts_server *server);

@@ -100,6 +100,8 @@ class Launcher:
         who = hbox(10, avatar, label(name))
         who.set_hexpand(True)
         footer = hbox(8, who)
+        footer.append(button(icon("emblem-system-symbolic"), css="icon", tooltip="Settings",
+                             on_click=shell.open_settings))
         footer.append(button(hbox(8, icon("system-lock-screen-symbolic"), label("Lock")),
                              css="flat", on_click=self.lock))
         footer.append(ConfirmButton("system-log-out-symbolic", "Log out", "Really log out?",

@@ -119,6 +119,10 @@ static void um_set_override_redirect(struct wl_listener *listener, void *data) {
 
 static struct unmanaged *create_unmanaged(struct ts_server *server, struct wlr_xwayland_surface *xs) {
 	struct unmanaged *um = calloc(1, sizeof(*um));
+	if (um == NULL) {
+		wlr_log(WLR_ERROR, "Out of memory");
+		return NULL;
+	}
 	um->server = server;
 	um->xsurface = xs;
 	um->associate.notify = um_associate;
@@ -302,7 +306,7 @@ static void xv_set_override_redirect(struct wl_listener *listener, void *data) {
 	}
 	xv_destroy(&view->destroy, NULL);
 	struct unmanaged *um = create_unmanaged(server, xs);
-	if (associated) {
+	if (um != NULL && associated) {
 		um_associate(&um->associate, NULL);
 		if (mapped) {
 			um_map(&um->map, NULL);
@@ -312,6 +316,9 @@ static void xv_set_override_redirect(struct wl_listener *listener, void *data) {
 
 static struct ts_view *create_view(struct ts_server *server, struct wlr_xwayland_surface *xs) {
 	struct ts_view *view = view_create_common(server, TS_VIEW_XWAYLAND);
+	if (view == NULL) {
+		return NULL;
+	}
 	view->xsurface = xs;
 	xs->data = view;
 

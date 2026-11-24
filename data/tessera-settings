@@ -1,0 +1,13 @@
+#!/bin/sh
+# Opens Tessera Settings.
+if [ -z "$TESSERA_SHELL_DIR" ]; then
+	for dir in /usr/local/share/tessera/shell /usr/share/tessera/shell; do
+		if [ -d "$dir/tessera_shell" ]; then
+			TESSERA_SHELL_DIR="$dir"
+			break
+		fi
+	done
+fi
+PYTHONPATH="$TESSERA_SHELL_DIR${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec /usr/bin/python3 -m tessera_shell.settings "$@"

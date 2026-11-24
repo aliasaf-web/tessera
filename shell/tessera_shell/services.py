@@ -21,6 +21,10 @@ class Service:
         self._listeners.append(callback)
         callback()
 
+    def disconnect(self, callback):
+        if callback in self._listeners:
+            self._listeners.remove(callback)
+
     def changed(self):
         for callback in list(self._listeners):
             try:

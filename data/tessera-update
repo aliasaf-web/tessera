@@ -1,0 +1,20 @@
+#!/bin/sh
+# Downloads the newest version of Tessera and installs it.
+
+set -eu
+
+src="$(cat /usr/local/share/tessera/source 2>/dev/null || true)"
+if [ -z "$src" ] || [ ! -f "$src/install.sh" ]; then
+	src="$HOME/tessera"
+fi
+if [ ! -f "$src/install.sh" ]; then
+	echo "Could not find the Tessera folder (looked in $src)."
+	exit 1
+fi
+
+cd "$src"
+if [ -d .git ]; then
+	printf '\n\033[1m==> Downloading the newest version\033[0m\n'
+	git pull --ff-only
+fi
+exec sh ./install.sh --update

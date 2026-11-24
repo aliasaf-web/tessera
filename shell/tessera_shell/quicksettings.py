@@ -5,6 +5,7 @@ import time
 from gi.repository import Gtk
 
 from . import ipc, services
+from .theme import write_config_value
 from .launcher import ConfirmButton
 from .layer import (button, clear, click_outside_closes, fullscreen_overlay, hbox,
                     icon, label, on_escape, set_monitor, vbox)
@@ -91,8 +92,7 @@ class QuickSettings:
         self.card.set_valign(Gtk.Align.END)
         self.card.set_hexpand(True)
         self.card.set_vexpand(True)
-        self.card.set_margin_end(shell.gaps)
-        self.card.set_margin_bottom(12 + 44 + 10)
+        self.place()
 
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
@@ -147,6 +147,8 @@ class QuickSettings:
         self.date_label = label("", "dim")
         self.date_label.set_hexpand(True)
         head = hbox(8, self.battery_row, self.date_label)
+        head.append(button(icon("emblem-system-symbolic"), css="icon", tooltip="Settings",
+                           on_click=self.open_settings))
         head.append(button(icon("system-lock-screen-symbolic"), css="icon", tooltip="Lock",
                            on_click=self.lock))
         head.append(button(icon("system-shutdown-symbolic"), css="icon", tooltip="Power",
@@ -162,11 +164,16 @@ class QuickSettings:
         self.bt_tile = Tile("bluetooth-active-symbolic", "Bluetooth", self.toggle_bluetooth,
                             lambda: self.open_page("bluetooth"))
         self.dark_tile = Tile("weather-clear-night-symbolic", "Dark mode", self.toggle_dark)
+        self.night_tile = Tile("display-brightness-symbolic", "Night light", self.toggle_night)
         self.dnd_tile = Tile("notifications-disabled-symbolic", "Do not disturb", self.toggle_dnd)
+        self.shot_tile = Tile("camera-photo-symbolic", "Screenshot", self.take_screenshot)
+        self.shot_tile.set(False, "Whole screen")
         grid.attach(self.wifi_tile.box, 0, 0, 1, 1)
         grid.attach(self.bt_tile.box, 1, 0, 1, 1)
         grid.attach(self.dark_tile.box, 0, 1, 1, 1)
-        grid.attach(self.dnd_tile.box, 1, 1, 1, 1)
+        grid.attach(self.night_tile.box, 1, 1, 1, 1)
+        grid.attach(self.dnd_tile.box, 0, 2, 1, 1)
+        grid.attach(self.shot_tile.box, 1, 2, 1, 1)
         page.append(grid)
 
         self.volume = SliderRow("audio-volume-high-symbolic",
@@ -271,9 +278,20 @@ class QuickSettings:
         bt.set_discovering(not bt.discovering)
 
     def toggle_dark(self):
-        self.shell.theme.set_dark(not self.shell.theme.dark)
+        # The reload that follows recolours everything, this panel included.
+        write_config_value("theme", "light" if self.shell.theme.dark else "dark")
         ipc.send("reload")
-        self.update_theme()
+
+    def toggle_night(self):
+        ipc.send("night-light", "toggle")
+
+    def take_screenshot(self):
+        self.hide()
+        self.shell.screenshot()
+
+    def open_settings(self):
+        self.hide()
+        self.shell.open_settings()
 
     def toggle_dnd(self):
         n = self.shell.notifications
@@ -294,6 +312,14 @@ class QuickSettings:
         self.dark_tile.set(self.shell.theme.dark, "On" if self.shell.theme.dark else "Off")
         dnd = self.shell.notifications.dnd
         self.dnd_tile.set(dnd, "On" if dnd else "Off")
+        night = bool(self.shell.state.get("night_light"))
+        self.night_tile.set(night, "On" if night else "Off")
+
+    def place(self):
+        """Sit just above the bar, which is smaller on small screens."""
+        size = self.shell.metrics(None)
+        self.card.set_margin_end(size["gaps"])
+        self.card.set_margin_bottom(size["margin"] + size["bar"] + 10)
 
     def update_network(self):
         net = self.shell.network
@@ -494,6 +520,7 @@ class QuickSettings:
     def show(self, monitor=None):
         self.monitor = monitor
         set_monitor(self.window, monitor)
+        self.place()
         self.stack.set_visible_child_name("main")
         self.date_label.set_label(time.strftime("%A %-d %B"))
         self.shell.audio.refresh()
