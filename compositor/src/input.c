@@ -81,7 +81,10 @@ void keyboard_apply_config(struct ts_server *server) {
 	}
 	struct ts_keyboard *kb;
 	wl_list_for_each(kb, &server->keyboards, link) {
-		wlr_keyboard_set_keymap(kb->wlr_keyboard, keymap);
+		/* A keyboard made by an app keeps the layout that app gave it. */
+		if (!kb->is_virtual) {
+			wlr_keyboard_set_keymap(kb->wlr_keyboard, keymap);
+		}
 	}
 	xkb_keymap_unref(keymap);
 }
@@ -305,7 +308,9 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 	uint32_t mods = wlr_keyboard_get_modifiers(keyboard->wlr_keyboard);
 
 	if (server->locked) {
-		if (pressed) {
+		/* Only a real keyboard can be used on the lock screen, so an app
+		 * can't type passwords into it. */
+		if (pressed && !keyboard->is_virtual) {
 			bool done = false;
 			for (int i = 0; i < nsyms && !done; i++) {
 				if ((syms[i] >= XKB_KEY_XF86Switch_VT_1 && syms[i] <= XKB_KEY_XF86Switch_VT_12) ||
@@ -403,7 +408,7 @@ static void keyboard_handle_destroy(struct wl_listener *listener, void *data) {
 }
 
 static void new_keyboard_ex(struct ts_server *server, struct wlr_input_device *device,
-		bool set_keymap) {
+		bool is_virtual) {
 	struct wlr_keyboard *wlr_keyboard = wlr_keyboard_from_input_device(device);
 	struct ts_keyboard *keyboard = calloc(1, sizeof(*keyboard));
 	if (keyboard == NULL) {
@@ -412,8 +417,9 @@ static void new_keyboard_ex(struct ts_server *server, struct wlr_input_device *d
 	}
 	keyboard->server = server;
 	keyboard->wlr_keyboard = wlr_keyboard;
+	keyboard->is_virtual = is_virtual;
 
-	if (set_keymap) {
+	if (!is_virtual) {
 		struct xkb_keymap *keymap = make_keymap(server);
 		if (keymap) {
 			wlr_keyboard_set_keymap(wlr_keyboard, keymap);
@@ -434,7 +440,7 @@ static void new_keyboard_ex(struct ts_server *server, struct wlr_input_device *d
 }
 
 static void new_keyboard(struct ts_server *server, struct wlr_input_device *device) {
-	new_keyboard_ex(server, device, true);
+	new_keyboard_ex(server, device, false);
 }
 
 static void update_capabilities(struct ts_server *server) {
@@ -446,20 +452,18 @@ static void update_capabilities(struct ts_server *server) {
 }
 
 /* On-screen keyboards and similar tools. */
-static struct wl_listener new_virtual_keyboard_listener;
-static struct wl_listener new_virtual_pointer_listener;
-static struct ts_server *virtual_server;
-
 static void new_virtual_keyboard(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, new_virtual_keyboard);
 	struct wlr_virtual_keyboard_v1 *vkbd = data;
-	new_keyboard_ex(virtual_server, &vkbd->keyboard.base, false);
-	update_capabilities(virtual_server);
+	new_keyboard_ex(server, &vkbd->keyboard.base, true);
+	update_capabilities(server);
 }
 
 static void new_virtual_pointer(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, new_virtual_pointer);
 	struct wlr_virtual_pointer_v1_new_pointer_event *event = data;
-	wlr_cursor_attach_input_device(virtual_server->cursor, &event->new_pointer->pointer.base);
-	update_capabilities(virtual_server);
+	wlr_cursor_attach_input_device(server->cursor, &event->new_pointer->pointer.base);
+	update_capabilities(server);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1224,13 +1228,12 @@ void input_init(struct ts_server *server) {
 	wlr_scene_node_set_enabled(&server->drop_hint->node, false);
 	server->drag_icons = wlr_scene_tree_create(server->layer_drag);
 
-	virtual_server = server;
-	struct wlr_virtual_keyboard_manager_v1 *vk =
-		wlr_virtual_keyboard_manager_v1_create(server->display);
-	new_virtual_keyboard_listener.notify = new_virtual_keyboard;
-	wl_signal_add(&vk->events.new_virtual_keyboard, &new_virtual_keyboard_listener);
-	struct wlr_virtual_pointer_manager_v1 *vp =
-		wlr_virtual_pointer_manager_v1_create(server->display);
-	new_virtual_pointer_listener.notify = new_virtual_pointer;
-	wl_signal_add(&vp->events.new_virtual_pointer, &new_virtual_pointer_listener);
+	server->virtual_keyboard = wlr_virtual_keyboard_manager_v1_create(server->display);
+	server->new_virtual_keyboard.notify = new_virtual_keyboard;
+	wl_signal_add(&server->virtual_keyboard->events.new_virtual_keyboard,
+		&server->new_virtual_keyboard);
+	server->virtual_pointer = wlr_virtual_pointer_manager_v1_create(server->display);
+	server->new_virtual_pointer.notify = new_virtual_pointer;
+	wl_signal_add(&server->virtual_pointer->events.new_virtual_pointer,
+		&server->new_virtual_pointer);
 }

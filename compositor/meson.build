@@ -1,7 +1,7 @@
 project(
 	'tessera',
 	'c',
-	version: '1.1.0',
+	version: '1.2.0',
 	license: 'MIT',
 	meson_version: '>=0.60.0',
 	default_options: ['c_std=c11', 'warning_level=2', 'werror=false'],
@@ -33,6 +33,7 @@ math = cc.find_library('m')
 have_xwayland = wlroots.get_variable(pkgconfig: 'have_xwayland', default_value: 'false') == 'true'
 xcb = dependency('xcb', required: have_xwayland)
 add_project_arguments('-DTESSERA_XWAYLAND=@0@'.format(have_xwayland ? 1 : 0), language: 'c')
+add_project_arguments('-DTESSERA_VERSION="@0@"'.format(meson.project_version()), language: 'c')
 
 scanner = find_program(wayland_scanner.get_variable(pkgconfig: 'wayland_scanner'), native: true)
 protocols_dir = wayland_protos.get_variable(pkgconfig: 'pkgdatadir')

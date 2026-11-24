@@ -42,9 +42,6 @@ keyboard_options=
 idle_lock_minutes=5
 idle_screen_off_minutes=10
 
-# Show the lock screen when the desktop starts (used for automatic login).
-lock_on_start=false
-
 # Apps opened by Super+Enter, Super+E and Super+B.
 terminal=foot
 files=thunar

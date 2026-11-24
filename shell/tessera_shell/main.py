@@ -110,13 +110,15 @@ class Shell:
         self.notifications.place()
 
     def open_settings(self):
-        self.launcher.hide()
         self.quick_settings.hide()
         try:
-            subprocess.Popen(["tessera-settings"], start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError as exc:
-            self.notifications.notify_internal("Could not open Settings", str(exc))
+            app = Gio.DesktopAppInfo.new("org.tessera.Settings.desktop")
+        except TypeError:
+            self.notifications.notify_internal("Could not open Settings",
+                                               "Settings is not installed.")
+            return
+        # Started like any app, so an open Settings window comes to the front.
+        self.launcher.launch(app)
 
     def current_monitor(self):
         # The compositor places a popup on the screen in use when no monitor

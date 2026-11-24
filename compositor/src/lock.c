@@ -93,6 +93,9 @@ void lock_engage(struct ts_server *server) {
 static void lock_release(struct ts_server *server) {
 	server->locked = false;
 	server->auth_failed = false;
+	server->auth_failures = 0;
+	server->auth_wait = 0;
+	wl_event_source_timer_update(server->auth_wait_timer, 0);
 	server->password_len = 0;
 	explicit_bzero(server->password, sizeof(server->password));
 	struct ts_output *output;
@@ -177,6 +180,28 @@ int lock_auth_helper_main(void) {
 	return ok == '1' ? 0 : 1;
 }
 
+/* After a few wrong passwords in a row, each new try has to wait a little
+ * longer: 2, 4, 8, 16 and then 30 seconds. */
+static int wait_after_failures(int failures) {
+	if (failures < 3) {
+		return 0;
+	}
+	int doublings = failures - 2;
+	return doublings >= 5 ? 30 : 1 << doublings;
+}
+
+static int wait_tick(void *data) {
+	struct ts_server *server = data;
+	if (server->auth_wait > 0) {
+		server->auth_wait--;
+	}
+	if (server->auth_wait > 0) {
+		wl_event_source_timer_update(server->auth_wait_timer, 1000);
+	}
+	lock_redraw(server);
+	return 0;
+}
+
 static int auth_done(int fd, uint32_t mask, void *data) {
 	struct ts_server *server = data;
 	char result = 0;
@@ -194,6 +219,11 @@ static int auth_done(int fd, uint32_t mask, void *data) {
 		lock_release(server);
 	} else {
 		server->auth_failed = true;
+		server->auth_failures++;
+		server->auth_wait = wait_after_failures(server->auth_failures);
+		if (server->auth_wait > 0) {
+			wl_event_source_timer_update(server->auth_wait_timer, 1000);
+		}
 		lock_redraw(server);
 	}
 	return 0;
@@ -219,6 +249,9 @@ static void start_auth(struct ts_server *server) {
 	}
 	if (pid == 0) {
 		/* Only async-signal-safe calls between fork and exec. */
+		sigset_t set;
+		sigemptyset(&set);
+		sigprocmask(SIG_SETMASK, &set, NULL);
 		dup2(in[0], STDIN_FILENO);
 		dup2(out[1], STDOUT_FILENO);
 		execl("/proc/self/exe", "tessera", "--auth-helper", (char *)NULL);
@@ -287,7 +320,7 @@ static void append_utf8(struct ts_server *server, uint32_t cp) {
 }
 
 bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepoint) {
-	if (!server->locked || server->auth_busy) {
+	if (!server->locked || server->auth_busy || server->auth_wait > 0) {
 		return true;
 	}
 	switch (sym) {
@@ -317,6 +350,7 @@ bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepo
 }
 
 void lock_init(struct ts_server *server) {
+	server->auth_wait_timer = wl_event_loop_add_timer(server->loop, wait_tick, server);
 	server->clock_timer = wl_event_loop_add_timer(server->loop, clock_tick, server);
 	wl_event_source_timer_update(server->clock_timer, 15000);
 }

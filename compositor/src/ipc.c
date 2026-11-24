@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <wlr/util/log.h>
@@ -14,10 +15,16 @@
  * Requests are plain words ("workspace 2", "lock"); replies and events are
  * one JSON object per line. */
 
-static void socket_path(char *buf, size_t size, const char *display) {
+/* The socket lives in the user's private runtime folder; without one there
+ * is no safe place for it, so it is not used at all. */
+static bool socket_path(char *buf, size_t size, const char *display) {
 	const char *runtime = getenv("XDG_RUNTIME_DIR");
-	snprintf(buf, size, "%s/tessera-%s.sock", runtime ? runtime : "/tmp",
+	if (runtime == NULL || runtime[0] != '/') {
+		return false;
+	}
+	int n = snprintf(buf, size, "%s/tessera-%s.sock", runtime,
 		display ? display : "wayland-0");
+	return n > 0 && (size_t)n < size;
 }
 
 void ipc_json_escape(char *out, size_t size, const char *in) {
@@ -208,7 +215,7 @@ static void handle_command(struct ts_ipc_client *client, char *line) {
 	} else if (strcmp(line, "dpms") == 0 && arg) {
 		output_set_dpms(server, strcmp(arg, "off") != 0);
 	} else if (strcmp(line, "version") == 0) {
-		client_write(client, "{\"version\":\"1.1.0\"}");
+		client_write(client, "{\"version\":\"" TESSERA_VERSION "\"}");
 		return;
 	} else {
 		client_write(client, "{\"ok\":false,\"error\":\"unknown command\"}");
@@ -285,7 +292,10 @@ static int server_readable(int fd, uint32_t mask, void *data) {
 
 void ipc_init(struct ts_server *server) {
 	wl_list_init(&server->ipc_clients);
-	socket_path(server->ipc_path, sizeof(server->ipc_path), server->socket_name);
+	if (!socket_path(server->ipc_path, sizeof(server->ipc_path), server->socket_name)) {
+		wlr_log(WLR_ERROR, "XDG_RUNTIME_DIR is not set; the control socket is turned off");
+		return;
+	}
 	unlink(server->ipc_path);
 
 	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
@@ -295,7 +305,11 @@ void ipc_init(struct ts_server *server) {
 	}
 	struct sockaddr_un addr = { .sun_family = AF_UNIX };
 	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", server->ipc_path);
-	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, 8) < 0) {
+	/* Only this user may connect: the socket can start programs. */
+	mode_t old_mask = umask(0177);
+	int bound = bind(fd, (struct sockaddr *)&addr, sizeof(addr));
+	umask(old_mask);
+	if (bound < 0 || listen(fd, 8) < 0) {
 		wlr_log_errno(WLR_ERROR, "Could not listen on %s", server->ipc_path);
 		close(fd);
 		return;
@@ -346,8 +360,9 @@ int ipc_client_main(int argc, char **argv) {
 	const char *env = getenv("TESSERA_SOCK");
 	if (env && env[0]) {
 		snprintf(path, sizeof(path), "%s", env);
-	} else {
-		socket_path(path, sizeof(path), getenv("WAYLAND_DISPLAY"));
+	} else if (!socket_path(path, sizeof(path), getenv("WAYLAND_DISPLAY"))) {
+		fprintf(stderr, "XDG_RUNTIME_DIR is not set, so Tessera can't be reached\n");
+		return 1;
 	}
 	struct sockaddr_un addr = { .sun_family = AF_UNIX };
 	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);

@@ -2,7 +2,8 @@
 # Installs the Tessera desktop on Debian 13 "trixie".
 # Run it as your normal user, from inside the tessera folder:   sh install.sh
 # "sh install.sh --update" brings an installed Tessera up to date without
-# asking any questions (tessera-update runs it after downloading).
+# asking any questions (tessera-update runs it after downloading). An update
+# never brings back apps you removed or turns back on what you turned off.
 
 set -eu
 
@@ -17,10 +18,12 @@ cd "$(dirname "$0")"
 SRC="$(pwd)"
 PREFIX=/usr/local
 ME="$(id -un)"
+TESSERA_VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$SRC/shell/tessera_shell/__init__.py")"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*"; }
 fail() { printf '\n\033[31m%s\033[0m\n\n' "$*"; exit 1; }
+installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'ok installed'; }
 
 # ---------------------------------------------------------------- checks
 
@@ -32,18 +35,29 @@ if ! command -v sudo >/dev/null 2>&1 || ! sudo -v; then
     apt install sudo && adduser $ME sudo
 Then log out, log back in as $ME and run this installer again."
 fi
-. /etc/os-release
-if [ "${VERSION_CODENAME:-}" != "trixie" ]; then
-	warn "This was made for Debian 13 (trixie); you have ${PRETTY_NAME:-an unknown system}."
+# Read in a subshell: /etc/os-release sets variables such as VERSION.
+CODENAME="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"
+SYSTEM="$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-an unknown system}")"
+if [ "$CODENAME" != "trixie" ]; then
+	warn "This was made for Debian 13 (trixie); you have $SYSTEM."
 	printf 'Continue anyway? [y/N] '
 	read -r answer </dev/tty || answer=""
 	case "$answer" in y|Y|yes) ;; *) exit 1 ;; esac
 fi
 
-AUTOLOGIN=yes
+# Automatic login: asked on a first install; an update keeps the choice.
+GREETD_CONFIG=/etc/tessera/greetd.toml
+OLD_GETTY=/etc/systemd/system/getty@tty1.service.d/tessera-autologin.conf
 if [ "$MODE" = "update" ]; then
-	AUTOLOGIN=keep
+	if [ -f "$GREETD_CONFIG" ]; then
+		if grep -q '^\[initial_session\]' "$GREETD_CONFIG"; then AUTOLOGIN=yes; else AUTOLOGIN=no; fi
+	elif [ -f "$OLD_GETTY" ]; then
+		AUTOLOGIN=yes # set up by Tessera 1.0 or 1.1
+	else
+		AUTOLOGIN=no
+	fi
 elif [ "${TESSERA_AUTOLOGIN:-ask}" = "ask" ]; then
+	AUTOLOGIN=yes
 	echo
 	echo "When the laptop turns on, Tessera can go straight to its own lock screen,"
 	echo "where you type your password. (Otherwise you log in on a text screen first.)"
@@ -59,35 +73,89 @@ fi
 say "Installing the programs Tessera needs (this can take a while)"
 sudo apt-get update
 
-# Needed to build the window manager.
-BUILD="build-essential meson ninja-build pkg-config libwlroots-0.18-dev
-libwayland-dev wayland-protocols libxkbcommon-dev libinput-dev libpixman-1-dev
-libcairo2-dev libpango1.0-dev libdrm-dev libsystemd-dev libpam0g-dev
-libxcb1-dev libxcb-icccm4-dev libxcb-ewmh-dev"
+# What Tessera needs is described as two small packages (see data/packages),
+# so apt keeps track of it: "Depends" are always kept, and a "Recommends" app
+# that you remove stays removed, because apt only adds recommended packages
+# the first time or when a new version recommends something new.
+PKGDIR="$(mktemp -d)"
+make_package() {
+	mkdir -p "$PKGDIR/$1/DEBIAN"
+	sed "s/@VERSION@/$TESSERA_VERSION/" "$SRC/data/packages/$1.control" >"$PKGDIR/$1/DEBIAN/control"
+	chmod 755 "$PKGDIR/$1" "$PKGDIR/$1/DEBIAN"
+	chmod 644 "$PKGDIR/$1/DEBIAN/control"
+	dpkg-deb --root-owner-group --build "$PKGDIR/$1" "$PKGDIR/$1.deb" >/dev/null
+	chmod 644 "$PKGDIR/$1.deb"
+}
+make_package tessera-build-deps
+make_package tessera-desktop
+chmod 755 "$PKGDIR" # apt reads the packages as its own user
+PACKAGES="$PKGDIR/tessera-build-deps.deb $PKGDIR/tessera-desktop.deb"
 
-# Needed to run the desktop.
-RUNTIME="xwayland dbus-user-session polkitd network-manager pipewire-audio
-wireplumber pulseaudio-utils bluez rfkill upower xdg-desktop-portal
-xdg-desktop-portal-gtk xdg-desktop-portal-wlr xdg-utils xdg-user-dirs git
-python3 python3-gi gir1.2-gtk-4.0 gir1.2-gtk4layershell-1.0 libgtk4-layer-shell0
-gir1.2-adw-1 gir1.2-gdkpixbuf-2.0
-gsettings-desktop-schemas dconf-gsettings-backend librsvg2-common
-adwaita-icon-theme papirus-icon-theme fonts-inter fonts-noto-color-emoji
-grim slurp wl-clipboard playerctl"
+# The login screen starts after the restart, not in the middle of installing.
+sudo systemctl mask --runtime greetd.service >/dev/null 2>&1 || true
+if [ "$MODE" = "install" ] || installed tessera-desktop; then
+	# shellcheck disable=SC2086
+	sudo apt-get install -y -o APT::Install-Recommends=true $PACKAGES
+else
+	# The first update after Tessera 1.0 or 1.1, which installed apps one by
+	# one: apps removed since then must stay removed.
+	# shellcheck disable=SC2086
+	sudo apt-get install -y --no-install-recommends $PACKAGES
+fi
+sudo systemctl unmask --runtime greetd.service >/dev/null 2>&1 || true
+rm -rf "$PKGDIR"
 
-# Everyday apps: terminal, files, web browser.
-APPS="foot thunar firefox-esr"
+# ---------------------------------------------------------- login screen
 
-# shellcheck disable=SC2086
-sudo apt-get install -y $BUILD $RUNTIME $APPS
-
-# Nice to have; skipped quietly if a package is not available.
-for pkg in adw-gtk3 gnome-text-editor loupe celluloid pavucontrol file-roller \
-		tumbler gvfs-backends lxpolkit thunar-archive-plugin; do
-	if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'ok installed'; then
-		sudo apt-get install -y "$pkg" >/dev/null 2>&1 || warn "  (skipped optional package $pkg)"
+# Set up before the new version is built: if a later step fails, the
+# computer still starts the installed version, locked as before.
+say "Setting up the login screen"
+AGREETY=""
+for path in /usr/sbin/agreety /usr/bin/agreety; do
+	if [ -x "$path" ]; then
+		AGREETY="$path"
+		break
 	fi
 done
+if [ -z "$AGREETY" ] || ! getent passwd _greetd >/dev/null; then
+	fail "The login screen (greetd) did not install correctly. Please run the installer again."
+fi
+FIRST_LOGIN_SETUP=no
+[ -f "$GREETD_CONFIG" ] || FIRST_LOGIN_SETUP=yes
+GREETD_TMP="$(mktemp)"
+sed -e "s|@AGREETY@|$AGREETY|" -e "s|@PREFIX@|$PREFIX|g" "$SRC/data/greetd.toml" >"$GREETD_TMP"
+if [ "$AUTOLOGIN" = "yes" ]; then
+	sed -e "s|@PREFIX@|$PREFIX|g" -e "s|@USER@|$ME|" "$SRC/data/greetd-autologin.toml" >>"$GREETD_TMP"
+fi
+sudo install -Dm 644 "$GREETD_TMP" "$GREETD_CONFIG"
+rm -f "$GREETD_TMP"
+sudo install -Dm 644 "$SRC/data/greetd-tessera.conf" /etc/systemd/system/greetd.service.d/tessera.conf
+sudo systemctl daemon-reload
+if [ "$FIRST_LOGIN_SETUP" = "yes" ]; then
+	# Later updates leave this alone, in case you choose another login screen.
+	if ! sudo systemctl enable greetd.service >/dev/null 2>&1; then
+		warn "  Another login screen is already set up on this computer."
+		warn "  Choose \"Tessera\" in it to use this desktop."
+	fi
+	if [ "$(systemctl get-default)" != "graphical.target" ]; then
+		sudo systemctl set-default graphical.target
+	fi
+fi
+
+# Tessera 1.0 and 1.1 started from a text login on the first screen. That
+# is replaced by the login screen above, which never leaves a command line
+# open (a text login could be interrupted with Ctrl+C).
+if [ -f "$OLD_GETTY" ]; then
+	sudo rm -f "$OLD_GETTY"
+	sudo rmdir --ignore-fail-on-non-empty "$(dirname "$OLD_GETTY")"
+	sudo systemctl daemon-reload
+fi
+sudo rm -f "$PREFIX/bin/tessera-login"
+PROFILE="$HOME/.profile"
+if [ -f "$PROFILE" ] && grep -q '^# >>> tessera >>>$' "$PROFILE" &&
+		grep -q '^# <<< tessera <<<$' "$PROFILE"; then
+	sed -i '/^# >>> tessera >>>$/,/^# <<< tessera <<<$/d' "$PROFILE"
+fi
 
 # ---------------------------------------------------------------- build
 
@@ -111,8 +179,7 @@ sudo install -d "$PREFIX/share/tessera/shell"
 sudo rm -rf "$PREFIX/share/tessera/shell/tessera_shell"
 sudo cp -r "$SRC/shell/tessera_shell" "$PREFIX/share/tessera/shell/"
 sudo find "$PREFIX/share/tessera/shell" -name '__pycache__' -prune -exec rm -rf {} +
-for script in tessera-session tessera-login tessera-autostart tessera-shell \
-		tessera-settings tessera-update; do
+for script in tessera-session tessera-autostart tessera-shell tessera-settings tessera-update; do
 	sudo install -m 755 "$SRC/data/$script" "$PREFIX/bin/$script"
 done
 # Lets tessera-update find this folder.
@@ -124,120 +191,117 @@ sudo install -Dm 644 "$SRC/data/pam-tessera" /etc/pam.d/tessera
 sudo install -Dm 644 "$SRC/data/tessera-portals.conf" /etc/xdg/xdg-desktop-portal/tessera-portals.conf
 sudo install -Dm 644 "$SRC/data/polkit-tessera.rules" /etc/polkit-1/rules.d/50-tessera.rules
 # The shared settings file is replaced by the new version; personal choices
-# live in ~/.config/tessera/config. Only the login choice is carried over.
-LOCK_ON_START=false
-if [ -f /etc/tessera/config ] && grep -q '^lock_on_start=true' /etc/tessera/config; then
-	LOCK_ON_START=true
-fi
+# live in ~/.config/tessera/config.
 sudo install -Dm 644 "$SRC/data/config" /etc/tessera/config
-sudo sed -i "s/^lock_on_start=.*/lock_on_start=$LOCK_ON_START/" /etc/tessera/config
 
-# ------------------------------------------------------------ your user
+# ------------------------------------------------- first install only
 
-say "Setting up your account"
-for group in netdev bluetooth video audio; do
-	if getent group "$group" >/dev/null; then
-		sudo usermod -aG "$group" "$ME"
-	fi
-done
-xdg-user-dirs-update >/dev/null 2>&1 || true
-mkdir -p "$HOME/.config/foot"
-if [ ! -f "$HOME/.config/foot/foot.ini" ]; then
-	cp "$SRC/data/foot.ini" "$HOME/.config/foot/foot.ini"
-fi
-if command -v xdg-mime >/dev/null 2>&1 && [ -f /usr/share/applications/thunar.desktop ]; then
-	if [ -z "$(xdg-mime query default inode/directory 2>/dev/null)" ]; then
-		xdg-mime default thunar.desktop inode/directory || true
-	fi
-fi
-
-# Start the desktop from the first text screen.
-PROFILE="$HOME/.profile"
-touch "$PROFILE"
-if ! grep -q '# >>> tessera >>>' "$PROFILE"; then
-	cat >>"$PROFILE" <<'EOF'
-
-# >>> tessera >>>
-# Start the Tessera desktop on the first screen.
-if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "$(tty)" = "/dev/tty1" ] && command -v tessera-login >/dev/null 2>&1; then
-	tessera-login
-	exit 0
-fi
-# <<< tessera <<<
-EOF
-fi
-
-GETTY_DIR=/etc/systemd/system/getty@tty1.service.d
-if [ "$AUTOLOGIN" = "yes" ]; then
-	sudo install -d "$GETTY_DIR"
-	printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --noclear %%I $TERM\n' "$ME" |
-		sudo tee "$GETTY_DIR/tessera-autologin.conf" >/dev/null
-	sudo sed -i 's/^lock_on_start=.*/lock_on_start=true/' /etc/tessera/config
-	sudo systemctl daemon-reload
-elif [ "$AUTOLOGIN" = "no" ]; then
-	sudo rm -f "$GETTY_DIR/tessera-autologin.conf"
-	sudo sed -i 's/^lock_on_start=.*/lock_on_start=false/' /etc/tessera/config
-	sudo systemctl daemon-reload
-fi
-
-# -------------------------------------------------------------- network
-
-# The Debian installer sets up the network in /etc/network/interfaces when
-# no desktop is chosen. Hand Wi-Fi over to NetworkManager, keeping the
-# network name and password, so it can be managed from quick settings.
-say "Letting the desktop manage Wi-Fi and network connections"
-IFACES=/etc/network/interfaces
-# The file can hold the Wi-Fi password, so only root may read it.
-IFACES_COPY="$(mktemp)"
-chmod 600 "$IFACES_COPY"
-# shellcheck disable=SC2024  # reading needs root, the copy belongs to us
-sudo cat "$IFACES" >"$IFACES_COPY" 2>/dev/null || true
-if grep -E '^[[:space:]]*iface[[:space:]]' "$IFACES_COPY" |
-		grep -qvE '^[[:space:]]*iface[[:space:]]+lo[[:space:]]'; then
-	[ -f "$IFACES.before-tessera" ] || sudo cp "$IFACES" "$IFACES.before-tessera"
-	current=""
-	ssid=""
-	psk=""
-	migrate_wifi() {
-		if [ -n "$current" ] && [ -n "$ssid" ]; then
-			if ! nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "$ssid"; then
-				if [ -n "$psk" ]; then
-					sudo nmcli connection add type wifi con-name "$ssid" ifname "$current" ssid "$ssid" \
-						wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$psk" </dev/null >/dev/null &&
-						echo "  Saved Wi-Fi network \"$ssid\"" || warn "  Could not save Wi-Fi \"$ssid\""
-				else
-					sudo nmcli connection add type wifi con-name "$ssid" ifname "$current" ssid "$ssid" \
-						</dev/null >/dev/null && echo "  Saved Wi-Fi network \"$ssid\"" ||
-						warn "  Could not save Wi-Fi \"$ssid\""
-				fi
-			fi
+if [ "$MODE" = "install" ]; then
+	say "Setting up your account"
+	for group in netdev bluetooth video audio; do
+		if getent group "$group" >/dev/null; then
+			sudo usermod -aG "$group" "$ME"
 		fi
-	}
-	while IFS= read -r line; do
-		# shellcheck disable=SC2086
-		set -- $line
-		case "${1:-}" in
-		iface)
-			migrate_wifi
-			current="${2:-}"; ssid=""; psk="" ;;
-		wpa-ssid|wireless-essid)
-			shift; ssid="$*" ;;
-		wpa-psk)
-			shift; psk="$*" ;;
-		esac
-	done <"$IFACES_COPY"
-	migrate_wifi
-	# Keep only the loopback part; NetworkManager handles everything else.
-	printf '# Networks are managed by NetworkManager (Tessera quick settings).\n# The previous version of this file is in %s.before-tessera\n\nsource /etc/network/interfaces.d/*\n\nauto lo\niface lo inet loopback\n' "$IFACES" |
-		sudo tee "$IFACES" >/dev/null
-fi
-rm -f "$IFACES_COPY"
-sudo systemctl enable NetworkManager >/dev/null 2>&1 || true
-sudo systemctl enable bluetooth >/dev/null 2>&1 || true
+	done
+	xdg-user-dirs-update >/dev/null 2>&1 || true
+	mkdir -p "$HOME/.config/foot"
+	if [ ! -f "$HOME/.config/foot/foot.ini" ]; then
+		cp "$SRC/data/foot.ini" "$HOME/.config/foot/foot.ini"
+	fi
+	if command -v xdg-mime >/dev/null 2>&1 && [ -f /usr/share/applications/thunar.desktop ]; then
+		if [ -z "$(xdg-mime query default inode/directory 2>/dev/null)" ]; then
+			xdg-mime default thunar.desktop inode/directory || true
+		fi
+	fi
 
-VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$SRC/shell/tessera_shell/__init__.py")"
+	# The Debian installer sets up the network in /etc/network/interfaces
+	# when no desktop is chosen. Hand Wi-Fi over to NetworkManager, keeping
+	# the network name and password, so it can be managed from quick settings.
+	say "Letting the desktop manage Wi-Fi and network connections"
+	IFACES=/etc/network/interfaces
+	# The file can hold the Wi-Fi password, so only root may read it.
+	IFACES_COPY="$(mktemp)"
+	chmod 600 "$IFACES_COPY"
+	# shellcheck disable=SC2024  # reading needs root, the copy belongs to us
+	sudo cat "$IFACES" >"$IFACES_COPY" 2>/dev/null || true
+	if grep -E '^[[:space:]]*iface[[:space:]]' "$IFACES_COPY" |
+			grep -qvE '^[[:space:]]*iface[[:space:]]+lo[[:space:]]'; then
+		[ -f "$IFACES.before-tessera" ] || sudo cp "$IFACES" "$IFACES.before-tessera"
+		current=""
+		ssid=""
+		psk=""
+		# A value written in double quotes means what is inside them.
+		unquote() {
+			case "$1" in
+			\"*\") v="${1#\"}"; printf '%s' "${v%\"}" ;;
+			*) printf '%s' "$1" ;;
+			esac
+		}
+		# NetworkManager's file format: backslashes doubled, a leading space as \s.
+		keyfile_value() {
+			v="$(printf '%s' "$1" | sed 's/\\/\\\\/g')"
+			case "$v" in " "*) v="\\s${v# }" ;; esac
+			printf '%s' "$v"
+		}
+		migrate_wifi() {
+			if [ -z "$current" ] || [ -z "$ssid" ]; then
+				return
+			fi
+			if nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "$ssid"; then
+				return
+			fi
+			# Written straight to a root-only file, so the password is never
+			# on a command line where other programs could see it.
+			uuid="$(cat /proc/sys/kernel/random/uuid)"
+			conn="$(mktemp)"
+			chmod 600 "$conn"
+			{
+				printf '[connection]\nid=%s\nuuid=%s\ntype=wifi\ninterface-name=%s\n\n' \
+					"$(keyfile_value "$ssid")" "$uuid" "$current"
+				printf '[wifi]\nmode=infrastructure\nssid=%s\n\n' "$(keyfile_value "$ssid")"
+				if [ -n "$psk" ]; then
+					printf '[wifi-security]\nkey-mgmt=wpa-psk\npsk=%s\n\n' "$(keyfile_value "$psk")"
+				fi
+				printf '[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n'
+			} >"$conn"
+			target="/etc/NetworkManager/system-connections/$uuid.nmconnection"
+			sudo install -D -m 600 -o root -g root "$conn" "$target"
+			rm -f "$conn"
+			sudo nmcli connection load "$target" >/dev/null 2>&1 || true
+			echo "  Saved Wi-Fi network \"$ssid\""
+		}
+		while IFS= read -r line; do
+			# The first word is the option; the rest of the line is its value,
+			# kept exactly as written (inner spaces, * and so on).
+			line="${line#"${line%%[![:space:]]*}"}"
+			key="${line%%[[:space:]]*}"
+			value="${line#"$key"}"
+			value="${value#"${value%%[![:space:]]*}"}"
+			value="${value%"${value##*[![:space:]]}"}"
+			case "$key" in
+			iface)
+				migrate_wifi
+				current="${value%%[[:space:]]*}"; ssid=""; psk="" ;;
+			wpa-ssid|wireless-essid)
+				ssid="$(unquote "$value")" ;;
+			wpa-psk)
+				psk="$(unquote "$value")" ;;
+			esac
+		done <"$IFACES_COPY"
+		migrate_wifi
+		# Keep only the loopback part; NetworkManager handles everything else.
+		printf '# Networks are managed by NetworkManager (Tessera quick settings).\n# The previous version of this file is in %s.before-tessera\n\nsource /etc/network/interfaces.d/*\n\nauto lo\niface lo inet loopback\n' "$IFACES" |
+			sudo tee "$IFACES" >/dev/null
+	fi
+	rm -f "$IFACES_COPY"
+	sudo systemctl enable NetworkManager >/dev/null 2>&1 || true
+	sudo systemctl enable bluetooth >/dev/null 2>&1 || true
+fi
+
+# --------------------------------------------------------------- finish
+
 if [ "$MODE" = "update" ]; then
-	say "Tessera is up to date (version $VERSION)"
+	say "Tessera is up to date (version $TESSERA_VERSION)"
 	echo
 	echo "  The new version starts after a restart."
 	printf '  Restart now? Save your work first. [y/N] '
@@ -257,8 +321,8 @@ if [ "$AUTOLOGIN" = "yes" ]; then
 	echo "  After the restart you will see the Tessera lock screen."
 	echo "  Type your password and press Enter."
 else
-	echo "  After the restart, log in on the text screen as usual;"
-	echo "  the desktop then starts by itself."
+	echo "  After the restart, type your user name and password on the"
+	echo "  login screen; the desktop then starts by itself."
 fi
 echo "  Tap the Super (Windows) key to open your apps."
 echo

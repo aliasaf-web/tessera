@@ -8,10 +8,14 @@ from gi.repository import Gio, GLib
 
 
 def socket_path():
+    """The control socket, in the user's private runtime folder (None if
+    there is no such folder: there is no safe place for it then)."""
     path = os.environ.get("TESSERA_SOCK")
     if path:
         return path
-    runtime = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        return None
     display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
     return os.path.join(runtime, f"tessera-{display}.sock")
 
@@ -19,10 +23,13 @@ def socket_path():
 def send(*words):
     """Send one command and return the reply (or None if it failed)."""
     line = " ".join(str(w) for w in words) + "\n"
+    path = socket_path()
+    if path is None:
+        return None
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.settimeout(2)
-            s.connect(socket_path())
+            s.connect(path)
             s.sendall(line.encode())
             reply = s.makefile().readline()
             return json.loads(reply) if reply else None
@@ -43,8 +50,11 @@ class EventStream:
         self._connect()
 
     def _connect(self):
+        path = socket_path()
+        if path is None:
+            return
         client = Gio.SocketClient()
-        address = Gio.UnixSocketAddress.new(socket_path())
+        address = Gio.UnixSocketAddress.new(path)
         try:
             self.conn = client.connect(address, None)
         except GLib.Error:

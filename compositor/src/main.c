@@ -17,10 +17,13 @@
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_screencopy_v1.h>
+#include <wlr/types/wlr_security_context_v1.h>
 #include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_virtual_keyboard_v1.h>
+#include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_foreign_registry.h>
 #include <wlr/types/wlr_xdg_foreign_v1.h>
@@ -28,8 +31,6 @@
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/util/log.h>
 #include "server.h"
-
-#define TESSERA_VERSION "1.1.0"
 
 void server_spawn(const char *cmd) {
 	if (cmd == NULL || cmd[0] == '\0') {
@@ -66,16 +67,49 @@ static void handle_activate(struct wl_listener *listener, void *data) {
 	if (view == NULL || !view->mapped) {
 		return;
 	}
+	/* Only bring a window forward when the request comes from something the
+	 * user did (wlroots has checked the click or key press it names), so an
+	 * app can't take the keyboard in the middle of typing. */
+	if (event->token->seat == NULL) {
+		wlr_log(WLR_DEBUG, "Ignored a focus request that the user did not cause");
+		return;
+	}
 	view_focus_id(server, view->id);
+}
+
+static bool is_privileged(struct ts_server *server, const struct wl_global *global) {
+	return global == server->security_context->global ||
+		global == server->screencopy->global ||
+		global == server->export_dmabuf->global ||
+		global == server->data_control->global ||
+		global == server->virtual_keyboard->global ||
+		global == server->virtual_pointer->global ||
+		global == server->layer_shell->global;
+}
+
+static bool filter_global(const struct wl_client *client, const struct wl_global *global,
+		void *data) {
+	struct ts_server *server = data;
+	/* Apps started in a sandbox connect through a security context. */
+	bool sandboxed = wlr_security_context_manager_v1_lookup_client(
+		server->security_context, client) != NULL;
+	return !sandboxed || !is_privileged(server, global);
+}
+
+static int handle_terminate(int signal_number, void *data) {
+	struct ts_server *server = data;
+	wl_display_terminate(server->display);
+	return 0;
 }
 
 static void usage(const char *name) {
 	printf("Tessera %s - a clean, simple desktop\n\n"
 		"Usage:\n"
 		"  %s                 start the desktop\n"
+		"  %s --locked        start the desktop with the lock screen showing\n"
 		"  %s msg COMMAND     send a command to the running desktop\n"
 		"  %s --version       show the version\n",
-		TESSERA_VERSION, name, name, name);
+		TESSERA_VERSION, name, name, name, name);
 }
 
 int main(int argc, char *argv[]) {
@@ -89,9 +123,14 @@ int main(int argc, char *argv[]) {
 		printf("tessera %s\n", TESSERA_VERSION);
 		return 0;
 	}
-	if (argc >= 2) {
-		usage(argv[0]);
-		return strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0 ? 0 : 1;
+	bool start_locked = false;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--locked") == 0) {
+			start_locked = true;
+		} else {
+			usage(argv[0]);
+			return strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0 ? 0 : 1;
+		}
 	}
 
 	wlr_log_init(getenv("TESSERA_DEBUG") ? WLR_DEBUG : WLR_INFO, NULL);
@@ -106,6 +145,11 @@ int main(int argc, char *argv[]) {
 
 	server.display = wl_display_create();
 	server.loop = wl_display_get_event_loop(server.display);
+	/* Logging out sends SIGTERM; close down properly instead of just dying. */
+	struct wl_event_source *sigterm =
+		wl_event_loop_add_signal(server.loop, SIGTERM, handle_terminate, &server);
+	struct wl_event_source *sigint =
+		wl_event_loop_add_signal(server.loop, SIGINT, handle_terminate, &server);
 	server.backend = wlr_backend_autocreate(server.loop, &server.session);
 	if (server.backend == NULL) {
 		wlr_log(WLR_ERROR, "Could not start: no display or input devices are available");
@@ -137,13 +181,13 @@ int main(int argc, char *argv[]) {
 	wlr_subcompositor_create(server.display);
 	wlr_data_device_manager_create(server.display);
 	wlr_primary_selection_v1_device_manager_create(server.display);
-	wlr_data_control_manager_v1_create(server.display);
+	server.data_control = wlr_data_control_manager_v1_create(server.display);
 	wlr_viewporter_create(server.display);
 	wlr_single_pixel_buffer_manager_v1_create(server.display);
 	wlr_fractional_scale_manager_v1_create(server.display, 1);
 	wlr_presentation_create(server.display, server.backend);
-	wlr_screencopy_manager_v1_create(server.display);
-	wlr_export_dmabuf_manager_v1_create(server.display);
+	server.screencopy = wlr_screencopy_manager_v1_create(server.display);
+	server.export_dmabuf = wlr_export_dmabuf_manager_v1_create(server.display);
 	wlr_alpha_modifier_v1_create(server.display);
 	server.pointer_gestures = wlr_pointer_gestures_v1_create(server.display);
 	struct wlr_xdg_foreign_registry *foreign = wlr_xdg_foreign_registry_create(server.display);
@@ -184,6 +228,9 @@ int main(int argc, char *argv[]) {
 	layers_init(&server);
 	input_init(&server);
 
+	server.security_context = wlr_security_context_manager_v1_create(server.display);
+	wl_display_set_global_filter(server.display, filter_global, &server);
+
 	const char *socket = wl_display_add_socket_auto(server.display);
 	if (socket == NULL) {
 		wlr_log(WLR_ERROR, "Could not create the Wayland socket");
@@ -217,7 +264,7 @@ int main(int argc, char *argv[]) {
 	idle_init(&server);
 	logind_init(&server);
 
-	if (server.config.lock_on_start) {
+	if (start_locked) {
 		lock_engage(&server);
 	}
 
@@ -227,7 +274,10 @@ int main(int argc, char *argv[]) {
 	server_spawn(startup ? startup : "tessera-autostart");
 
 	wl_display_run(server.display);
+	wlr_log(WLR_INFO, "Tessera is closing");
 
+	wl_event_source_remove(sigterm);
+	wl_event_source_remove(sigint);
 	ipc_finish(&server);
 	wl_display_destroy_clients(server.display);
 #if TESSERA_XWAYLAND
@@ -235,12 +285,13 @@ int main(int argc, char *argv[]) {
 		wlr_xwayland_destroy(server.xwayland);
 	}
 #endif
+	/* Screens and input devices go first: their clean-up still uses the scene. */
+	wlr_backend_destroy(server.backend);
 	wlr_scene_node_destroy(&server.scene->tree.node);
 	wlr_xcursor_manager_destroy(server.cursor_mgr);
 	wlr_cursor_destroy(server.cursor);
 	wlr_allocator_destroy(server.allocator);
 	wlr_renderer_destroy(server.renderer);
-	wlr_backend_destroy(server.backend);
 	wl_display_destroy(server.display);
 	return 0;
 }

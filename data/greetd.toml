@@ -1,0 +1,11 @@
+# Tessera's login screen, run by greetd (see "man 5 greetd").
+# Written by the Tessera installer, which replaces it when updating.
+
+[terminal]
+vt = 7
+
+# The password login, used when automatic login is off and after logging out
+# or if the desktop stops: it never leaves a command line open.
+[default_session]
+command = "@AGREETY@ --cmd @PREFIX@/bin/tessera-session"
+user = "_greetd"

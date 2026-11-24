@@ -369,8 +369,14 @@ struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *
 
 	const char *hint = "Type your password, then press Enter";
 	struct ts_color hint_color = t->text_dim;
+	char wait[96];
 	if (server->auth_busy) {
 		hint = "Checking…";
+	} else if (server->auth_wait > 0) {
+		snprintf(wait, sizeof(wait), "Too many wrong passwords. Try again in %d second%s.",
+			server->auth_wait, server->auth_wait == 1 ? "" : "s");
+		hint = wait;
+		hint_color = t->accent;
 	} else if (server->auth_failed) {
 		hint = "That password didn't work. Please try again.";
 		hint_color = t->accent;

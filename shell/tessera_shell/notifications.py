@@ -6,6 +6,7 @@ import time
 
 from gi.repository import GdkPixbuf, Gdk, Gio, GLib, Gtk, Gtk4LayerShell as LayerShell, Pango
 
+from . import __version__
 from .layer import Edge, Layer, button, hbox, icon, label, layer_window, vbox
 
 INTROSPECTION = """
@@ -120,7 +121,7 @@ class Notifications:
             invocation.return_value(GLib.Variant("(as)", (["body", "body-markup", "actions",
                                                            "icon-static", "persistence"],)))
         elif method == "GetServerInformation":
-            invocation.return_value(GLib.Variant("(ssss)", ("Tessera", "Tessera", "1.0", "1.2")))
+            invocation.return_value(GLib.Variant("(ssss)", ("Tessera", "Tessera", __version__, "1.2")))
         elif method == "CloseNotification":
             (nid,) = params.unpack()
             self.close(nid, 3)

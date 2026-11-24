@@ -1,0 +1,13 @@
+Package: tessera-build-deps
+Version: @VERSION@
+Architecture: all
+Section: metapackages
+Priority: optional
+Maintainer: Tessera <https://github.com/aliasaf-web/tessera>
+Depends: build-essential, meson, ninja-build, pkg-config, libwlroots-0.18-dev,
+ libwayland-dev, wayland-protocols, libxkbcommon-dev, libinput-dev,
+ libpixman-1-dev, libcairo2-dev, libpango1.0-dev, libdrm-dev, libsystemd-dev,
+ libpam0g-dev, libxcb1-dev, libxcb-icccm4-dev, libxcb-ewmh-dev
+Description: tools needed to build and update the Tessera desktop
+ Tessera is built on this computer, so updates need a compiler and these
+ development files. Made by the Tessera installer.

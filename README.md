@@ -83,6 +83,10 @@ press Enter, then your password (nothing shows as you type, which is normal) and
 After the restart you'll see the Tessera lock screen. Type your password and
 press Enter. A welcome screen explains the basics.
 
+If you log out (or if the desktop ever stops), a simple text login appears
+instead: type your user name, press Enter, then your password. Restarting the
+laptop brings back the lock screen.
+
 ---
 
 ## Everyday use
@@ -143,7 +147,8 @@ tessera-update
 ```
 
 Type your password when asked. It downloads the newest version, installs it and
-then offers to restart. Your settings are kept.
+then offers to restart. Your settings are kept, and apps you removed (or things
+you turned off, such as Bluetooth) stay that way.
 
 > **Updating from the first version (1.0):** it doesn't have `tessera-update`
 > yet, so the first time type this instead:
@@ -155,7 +160,7 @@ then offers to restart. Your settings are kept.
 
 - **The screen is stuck or the desktop won't start:** press **Ctrl + Alt + F2**
   for a text screen, log in, and look at `~/.local/state/tessera/tessera.log`.
-  **Ctrl + Alt + F1** goes back.
+  **Ctrl + Alt + F7** goes back to the desktop.
 - **The bar disappeared:** it restarts by itself within a few seconds. Its log is
   `~/.local/state/tessera/shell.log`.
 - **Wi-Fi doesn't connect after installing:** click the clock, then the arrow next
@@ -170,11 +175,17 @@ then offers to restart. Your settings are kept.
 |---|---|---|
 | `compositor/` | Window manager: draws windows, tiling, title bars, rounded corners, workspaces and their animation, window switcher, keyboard, touchpad and gestures, night light, background, lock screen, screen locking before sleep | C with wlroots 0.18 (Debian's version) |
 | `shell/` | Bar, app launcher, quick settings, notifications, volume/brightness pop-up, window switcher, welcome screen, Settings app | Python with GTK 4, gtk4-layer-shell and libadwaita |
-| `data/` | Session start-up scripts, update command, default settings, password check (PAM), screen-sharing setup | Shell scripts and config files |
+| `data/` | Session start-up scripts, update command, default settings, password check (PAM), login screen and screen-sharing setup, package lists | Shell scripts and config files |
 
 Tessera uses Debian's standard services rather than replacing them:
-NetworkManager (Wi-Fi), PipeWire (sound), BlueZ (Bluetooth), UPower (battery),
-systemd-logind (sleep, brightness, power), and Xwayland for older X11 apps.
+greetd (login screen), NetworkManager (Wi-Fi), PipeWire (sound), BlueZ
+(Bluetooth), UPower (battery), systemd-logind (sleep, brightness, power), and
+Xwayland for older X11 apps.
+
+What it installs is listed in two small packages that the installer makes:
+`tessera-desktop` and `tessera-build-deps` (see `data/packages`). Apps that
+come with Tessera are "recommended", so you can remove any of them with
+`sudo apt remove NAME` and updates will leave it removed.
 
 The control command `tessera msg` can switch workspaces, lock the screen and more;
 run it without arguments to see the list.

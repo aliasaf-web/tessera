@@ -77,7 +77,6 @@ struct ts_config {
 	char layout_size[16];  /* auto, compact or comfortable */
 	int idle_lock_minutes;
 	int idle_screen_off_minutes;
-	bool lock_on_start;
 	char night_light[16];  /* off, scheduled or always */
 	int night_from;        /* minutes after midnight */
 	int night_to;
@@ -223,6 +222,7 @@ struct ts_keyboard {
 	struct wl_list link;
 	struct ts_server *server;
 	struct wlr_keyboard *wlr_keyboard;
+	bool is_virtual; /* made by an app, not a real keyboard */
 	struct wl_listener modifiers;
 	struct wl_listener key;
 	struct wl_listener destroy;
@@ -285,6 +285,16 @@ struct ts_server {
 	struct wl_listener new_decoration;
 	struct wlr_xdg_activation_v1 *xdg_activation;
 	struct wl_listener request_activate;
+	/* Protocols that can read the screen or the clipboard, fake input, or
+	 * draw desktop panels. Sandboxed apps (such as Flatpaks) don't get them. */
+	struct wlr_security_context_manager_v1 *security_context;
+	struct wlr_screencopy_manager_v1 *screencopy;
+	struct wlr_export_dmabuf_manager_v1 *export_dmabuf;
+	struct wlr_data_control_manager_v1 *data_control;
+	struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard;
+	struct wl_listener new_virtual_keyboard;
+	struct wlr_virtual_pointer_manager_v1 *virtual_pointer;
+	struct wl_listener new_virtual_pointer;
 	struct wlr_idle_notifier_v1 *idle_notifier;
 	struct wlr_idle_inhibit_manager_v1 *idle_inhibit;
 	struct wl_listener new_inhibitor;
@@ -373,6 +383,9 @@ struct ts_server {
 	size_t password_len;
 	bool auth_busy;
 	bool auth_failed;
+	int auth_failures;       /* wrong passwords in a row */
+	int auth_wait;           /* seconds before the next try is allowed */
+	struct wl_event_source *auth_wait_timer;
 	pid_t auth_pid;
 	int auth_fd;
 	struct wl_event_source *auth_source;

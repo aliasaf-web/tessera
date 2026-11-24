@@ -1,0 +1,5 @@
+
+# Automatic login, once per start-up: the desktop opens on its lock screen.
+[initial_session]
+command = "@PREFIX@/bin/tessera-session --locked"
+user = "@USER@"

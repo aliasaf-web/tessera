@@ -119,8 +119,6 @@ static void load_file(struct ts_config *c, const char *path) {
 			c->idle_lock_minutes = atoi(val);
 		} else if (strcmp(key, "idle_screen_off_minutes") == 0) {
 			c->idle_screen_off_minutes = atoi(val);
-		} else if (strcmp(key, "lock_on_start") == 0) {
-			c->lock_on_start = parse_bool(val);
 		} else if (strcmp(key, "night_light") == 0) {
 			copy_str(c->night_light, sizeof(c->night_light), val);
 		} else if (strcmp(key, "night_light_from") == 0) {
@@ -164,7 +162,6 @@ void config_load(struct ts_server *server) {
 	copy_str(c->layout_size, sizeof(c->layout_size), "auto");
 	c->idle_lock_minutes = 5;
 	c->idle_screen_off_minutes = 10;
-	c->lock_on_start = false;
 	copy_str(c->night_light, sizeof(c->night_light), "off");
 	c->night_from = 20 * 60;
 	c->night_to = 7 * 60;

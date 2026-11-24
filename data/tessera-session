@@ -1,6 +1,6 @@
 #!/bin/sh
-# Starts a Tessera desktop session. Run from a text login (see tessera-login)
-# or pick "Tessera" in a display manager.
+# Starts a Tessera desktop session. The login screen (greetd) runs it, adding
+# --locked for automatic login; it can also be picked in other login screens.
 
 export XDG_CURRENT_DESKTOP=Tessera
 export XDG_SESSION_DESKTOP=tessera
@@ -25,6 +25,6 @@ done
 
 if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && [ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ] &&
 		command -v dbus-run-session >/dev/null 2>&1; then
-	exec dbus-run-session -- tessera >"$state/tessera.log" 2>&1
+	exec dbus-run-session -- tessera "$@" >"$state/tessera.log" 2>&1
 fi
-exec tessera >"$state/tessera.log" 2>&1
+exec tessera "$@" >"$state/tessera.log" 2>&1
