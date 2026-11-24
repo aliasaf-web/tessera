@@ -51,12 +51,12 @@ press Enter, then your password (nothing shows as you type, which is normal) and
 ## Part 2: Install Tessera (about 10–20 minutes)
 
 1. **Get Tessera onto the laptop.**
-   - If Tessera is on GitHub, type the following (replace the address with yours):
+   - Type these two lines (press Enter after each):
      ```
      sudo apt install git
-     git clone https://github.com/YOUR-NAME/tessera
+     git clone https://github.com/aliasaf-web/tessera
      ```
-   - If you have it on a USB stick, plug it in and type:
+   - Or, if you have it on a USB stick instead, plug it in and type:
      ```
      sudo apt install udisks2
      udisksctl mount -b /dev/sdb1
