@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/util/log.h>
+#include "idle_plan.h"
 #include "server.h"
 
 /* Idle handling: after a while without input the screen locks, a bit
@@ -11,12 +12,14 @@ static bool idle_inhibited(struct ts_server *server) {
 	return !wl_list_empty(&server->idle_inhibit->inhibitors);
 }
 
-static void schedule(struct ts_server *server, int minutes) {
-	if (minutes <= 0) {
-		wl_event_source_timer_update(server->idle_timer, 0);
-		return;
-	}
-	wl_event_source_timer_update(server->idle_timer, minutes * 60 * 1000);
+/* Waits until the next step of the plan, counted from the last input. */
+static void schedule_next(struct ts_server *server) {
+	struct ts_config *c = &server->config;
+	struct idle_plan plan = idle_plan_make(c->idle_lock_minutes, c->idle_screen_off_minutes);
+	int next = idle_plan_next(plan, server->idle_elapsed);
+	server->idle_next = next;
+	wl_event_source_timer_update(server->idle_timer,
+		next > 0 ? (next - server->idle_elapsed) * 60 * 1000 : 0);
 }
 
 static int idle_fire(void *data) {
@@ -26,24 +29,16 @@ static int idle_fire(void *data) {
 		wl_event_source_timer_update(server->idle_timer, 60 * 1000);
 		return 0;
 	}
-	if (server->idle_stage == 0) {
-		server->idle_stage = 1;
-		if (c->idle_lock_minutes > 0) {
-			lock_engage(server);
-		}
-		int rest = c->idle_screen_off_minutes - (c->idle_lock_minutes > 0 ? c->idle_lock_minutes : 0);
-		if (c->idle_screen_off_minutes > 0) {
-			if (rest <= 0) {
-				output_set_dpms(server, false);
-				server->idle_stage = 2;
-			} else {
-				schedule(server, rest);
-			}
-		}
-	} else if (server->idle_stage == 1) {
-		server->idle_stage = 2;
+	server->idle_elapsed = server->idle_next;
+	struct idle_plan plan = idle_plan_make(c->idle_lock_minutes, c->idle_screen_off_minutes);
+	if (plan.lock_at > 0 && plan.lock_at <= server->idle_elapsed) {
+		lock_engage(server);
+	}
+	if (plan.off_at > 0 && plan.off_at <= server->idle_elapsed && !server->idle_screen_off) {
+		server->idle_screen_off = true;
 		output_set_dpms(server, false);
 	}
+	schedule_next(server);
 	return 0;
 }
 
@@ -51,17 +46,12 @@ void idle_reset(struct ts_server *server) {
 	if (server->idle_timer == NULL) {
 		return;
 	}
-	if (server->idle_stage == 2) {
+	if (server->idle_screen_off) {
+		server->idle_screen_off = false;
 		output_set_dpms(server, true);
 	}
-	server->idle_stage = 0;
-	struct ts_config *c = &server->config;
-	int first = c->idle_lock_minutes > 0 ? c->idle_lock_minutes : c->idle_screen_off_minutes;
-	if (c->idle_lock_minutes > 0 && c->idle_screen_off_minutes > 0 &&
-			c->idle_screen_off_minutes < c->idle_lock_minutes) {
-		first = c->idle_screen_off_minutes;
-	}
-	schedule(server, first);
+	server->idle_elapsed = 0;
+	schedule_next(server);
 }
 
 void idle_update_inhibit(struct ts_server *server) {

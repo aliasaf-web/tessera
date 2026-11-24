@@ -72,6 +72,11 @@ static void handle_activate(struct wl_listener *listener, void *data) {
 	 * app can't take the keyboard in the middle of typing. */
 	if (event->token->seat == NULL) {
 		wlr_log(WLR_DEBUG, "Ignored a focus request that the user did not cause");
+		/* Still show that the window wants attention. */
+		if (view_is_hidden(view) && !view->urgent) {
+			view->urgent = true;
+			ipc_send_state(server);
+		}
 		return;
 	}
 	view_focus_id(server, view->id);

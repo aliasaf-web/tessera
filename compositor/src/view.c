@@ -339,6 +339,10 @@ void view_focus(struct ts_view *view) {
 	ipc_send_state(server);
 }
 
+bool view_is_hidden(struct ts_view *view) {
+	return view->output != NULL && view->workspace != view->output->workspace;
+}
+
 struct ts_view *view_by_id(struct ts_server *server, uint32_t id) {
 	struct ts_view *view;
 	wl_list_for_each(view, &server->views, link) {
@@ -401,6 +405,15 @@ static void center_float_box(struct ts_view *view) {
 	fb->y = area.y + (area.height - fb->height) / 2;
 }
 
+/* A floating window that leaves full screen or maximized gets back the size
+ * and place it had before (the app would otherwise keep the big size). */
+static void restore_floating_size(struct ts_view *view) {
+	if (view->floating && !view->fullscreen && !view->maximized &&
+			view->float_box.width > 0 && view->float_box.height > 0) {
+		view_set_box(view, view->float_box);
+	}
+}
+
 void view_set_fullscreen(struct ts_view *view, bool fullscreen) {
 	if (view->fullscreen == fullscreen) {
 		return;
@@ -425,6 +438,7 @@ void view_set_fullscreen(struct ts_view *view, bool fullscreen) {
 		wlr_xwayland_surface_set_fullscreen(view->xsurface, fullscreen);
 	}
 #endif
+	restore_floating_size(view);
 	view_reparent(view);
 	if (view->output) {
 		arrange_output(view->output);
@@ -446,6 +460,7 @@ void view_set_maximized(struct ts_view *view, bool maximized) {
 		wlr_xwayland_surface_set_maximized(view->xsurface, maximized);
 	}
 #endif
+	restore_floating_size(view);
 	view_reparent(view);
 	if (view->output) {
 		arrange_output(view->output);
@@ -669,7 +684,13 @@ void view_map_common(struct ts_view *view) {
 	} else {
 		view_update_frame(view);
 	}
-	view_focus(view);
+	/* A window that opens on a workspace you can't see (a dialog of a
+	 * window there) doesn't take the keyboard; its workspace is marked. */
+	if (view_is_hidden(view)) {
+		view->urgent = true;
+	} else {
+		view_focus(view);
+	}
 	cursor_rebase(server);
 	ipc_send_state(server);
 }

@@ -190,6 +190,11 @@ static void new_layer_surface(struct wl_listener *listener, void *data) {
 		ls->output = output->wlr_output;
 	}
 	struct ts_output *output = ls->output->data;
+	if (output == NULL) {
+		/* A screen that could not be set up. */
+		wlr_layer_surface_v1_destroy(ls);
+		return;
+	}
 
 	struct ts_layer_surface *layer = calloc(1, sizeof(*layer));
 	if (layer == NULL) {

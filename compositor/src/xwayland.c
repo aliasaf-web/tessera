@@ -287,13 +287,13 @@ static void xv_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&view->set_title.link);
 	wl_list_remove(&view->set_app_id.link);
 	wl_list_remove(&view->set_hints.link);
-	wl_list_remove(&view->request_resize_override.link);
+	wl_list_remove(&view->set_override_redirect.link);
 	view->xsurface->data = NULL;
 	view_destroy_common(view);
 }
 
 static void xv_set_override_redirect(struct wl_listener *listener, void *data) {
-	struct ts_view *view = wl_container_of(listener, view, request_resize_override);
+	struct ts_view *view = wl_container_of(listener, view, set_override_redirect);
 	struct wlr_xwayland_surface *xs = view->xsurface;
 	struct ts_server *server = view->server;
 	bool associated = xs->surface != NULL;
@@ -348,8 +348,8 @@ static struct ts_view *create_view(struct ts_server *server, struct wlr_xwayland
 	wl_signal_add(&xs->events.set_class, &view->set_app_id);
 	view->set_hints.notify = xv_set_hints;
 	wl_signal_add(&xs->events.set_hints, &view->set_hints);
-	view->request_resize_override.notify = xv_set_override_redirect;
-	wl_signal_add(&xs->events.set_override_redirect, &view->request_resize_override);
+	view->set_override_redirect.notify = xv_set_override_redirect;
+	wl_signal_add(&xs->events.set_override_redirect, &view->set_override_redirect);
 	return view;
 }
 

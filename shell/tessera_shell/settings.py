@@ -584,7 +584,8 @@ class SettingsWindow(Adw.ApplicationWindow):
     def page_power(self):
         group = Adw.PreferencesGroup(
             title="When you are away",
-            description="The screen always locks before the computer goes to sleep.")
+            description="If locking is on, turning the screen off locks it too. "
+                        "It always locks before the computer goes to sleep.")
 
         def minutes(key, default):
             try:

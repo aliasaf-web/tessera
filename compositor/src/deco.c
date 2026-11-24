@@ -131,16 +131,23 @@ static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, do
 	cairo_close_path(cr);
 }
 
-static void draw_text(cairo_t *cr, const char *text, const char *font, double px,
-		int weight, double x, double y, double max_w, struct ts_color color,
-		bool center, double *out_w, double *out_h) {
+static PangoLayout *make_layout(cairo_t *cr, const char *text, const char *font, double px,
+		int weight) {
 	PangoLayout *layout = pango_cairo_create_layout(cr);
 	PangoFontDescription *desc = pango_font_description_from_string(font);
 	pango_font_description_set_absolute_size(desc, px * PANGO_SCALE);
 	pango_font_description_set_weight(desc, weight);
 	pango_layout_set_font_description(layout, desc);
+	pango_font_description_free(desc);
 	pango_layout_set_text(layout, text ? text : "", -1);
 	pango_layout_set_single_paragraph_mode(layout, TRUE);
+	return layout;
+}
+
+static void draw_text(cairo_t *cr, const char *text, const char *font, double px,
+		int weight, double x, double y, double max_w, struct ts_color color,
+		bool center, double *out_w, double *out_h) {
+	PangoLayout *layout = make_layout(cr, text, font, px, weight);
 	if (max_w > 0) {
 		pango_layout_set_width(layout, (int)(max_w * PANGO_SCALE));
 		pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
@@ -156,7 +163,20 @@ static void draw_text(cairo_t *cr, const char *text, const char *font, double px
 	if (out_h) {
 		*out_h = th;
 	}
-	pango_font_description_free(desc);
+	g_object_unref(layout);
+}
+
+static void text_size(cairo_t *cr, const char *text, const char *font, double px,
+		int weight, double *out_w, double *out_h) {
+	PangoLayout *layout = make_layout(cr, text, font, px, weight);
+	int tw, th;
+	pango_layout_get_pixel_size(layout, &tw, &th);
+	if (out_w) {
+		*out_w = tw;
+	}
+	if (out_h) {
+		*out_h = th;
+	}
 	g_object_unref(layout);
 }
 
@@ -370,7 +390,13 @@ struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *
 	const char *hint = "Type your password, then press Enter";
 	struct ts_color hint_color = t->text_dim;
 	char wait[96];
-	if (server->auth_busy) {
+	if (server->lock_armed == TS_LOCK_BUTTON_RESTART) {
+		hint = "Click Restart again to restart. Open apps will close.";
+		hint_color = t->accent;
+	} else if (server->lock_armed == TS_LOCK_BUTTON_SHUT_DOWN) {
+		hint = "Click Shut down again to turn off. Open apps will close.";
+		hint_color = t->accent;
+	} else if (server->auth_busy) {
 		hint = "Checking…";
 	} else if (server->auth_wait > 0) {
 		snprintf(wait, sizeof(wait), "Too many wrong passwords. Try again in %d second%s.",
@@ -384,8 +410,50 @@ struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *
 	draw_text(cr, hint, "Inter, sans-serif", 14, 400, cx, fy + fh + 30, w - 40,
 		hint_color, true, NULL, NULL);
 
-	draw_text(cr, "Locked", "Inter, sans-serif", 13, 500, cx, h - 36, 0, t->text_dim,
-		true, NULL, NULL);
+	/* Caps Lock, and the keyboard layout when there is more than one. */
+	double note_y = fy + fh + 56;
+	if (lock_caps_lock_on(server)) {
+		draw_text(cr, "Caps Lock is on", "Inter, sans-serif", 13, 600, cx, note_y, 0,
+			t->accent, true, NULL, NULL);
+		note_y += 22;
+	}
+	const char *layout = lock_layout_name(server);
+	if (layout) {
+		char note[160];
+		snprintf(note, sizeof(note), "Keyboard: %s", layout);
+		draw_text(cr, note, "Inter, sans-serif", 13, 400, cx, note_y, w - 40, t->text_dim,
+			true, NULL, NULL);
+	}
+
+	/* Sleep, Restart and Shut down along the bottom. */
+	static const char *const labels[TS_LOCK_BUTTON_COUNT] = {
+		[TS_LOCK_BUTTON_SLEEP] = "Sleep",
+		[TS_LOCK_BUTTON_RESTART] = "Restart",
+		[TS_LOCK_BUTTON_SHUT_DOWN] = "Shut down",
+	};
+	const double bh = 36, pad = 18, gap = 10;
+	double widths[TS_LOCK_BUTTON_COUNT] = {0}, total = 0;
+	for (int i = TS_LOCK_BUTTON_NONE + 1; i < TS_LOCK_BUTTON_COUNT; i++) {
+		double tw;
+		text_size(cr, labels[i], "Inter, sans-serif", 13, 500, &tw, NULL);
+		widths[i] = tw + 2 * pad;
+		total += widths[i] + (i > TS_LOCK_BUTTON_NONE + 1 ? gap : 0);
+	}
+	double bx = cx - total / 2, by = h - 28 - bh;
+	for (int i = TS_LOCK_BUTTON_NONE + 1; i < TS_LOCK_BUTTON_COUNT; i++) {
+		bool armed = server->lock_armed == (enum ts_lock_button)i;
+		bool hover = server->lock_hover == (enum ts_lock_button)i;
+		rounded_rect(cr, bx, by, widths[i], bh, bh / 2);
+		set_color(cr, armed ? t->accent : (hover ? t->surface_hover : t->surface));
+		cairo_fill(cr);
+		draw_text(cr, labels[i], "Inter, sans-serif", 13, 500, bx + widths[i] / 2,
+			by + bh / 2, 0, armed ? t->on_accent : t->text, true, NULL, NULL);
+		if (output) {
+			output->lock_buttons[i] = (struct wlr_box){
+				(int)bx, (int)by, (int)widths[i], (int)bh };
+		}
+		bx += widths[i] + gap;
+	}
 
 	cairo_destroy(cr);
 	cairo_surface_flush(buffer->surface);

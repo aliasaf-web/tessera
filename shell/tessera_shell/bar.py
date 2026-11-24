@@ -137,12 +137,17 @@ class Bar:
         clear(self.ws_box)
         current = state.get("workspace", 1)
         occupied = set(state.get("occupied", []))
+        urgent = set(state.get("urgent", []))
         count = max([3, current] + list(occupied))
         for i in range(1, count + 1):
             dot = Gtk.Button()
             dot.add_css_class("ws-dot")
+            tooltip = f"Workspace {i}  (Super+{i})"
             if i == current:
                 dot.add_css_class("current")
+            elif i in urgent:
+                dot.add_css_class("urgent")
+                tooltip = f"Workspace {i}: a window there needs you  (Super+{i})"
             elif i in occupied:
                 dot.add_css_class("occupied")
             dot.set_valign(Gtk.Align.CENTER)
@@ -152,7 +157,7 @@ class Bar:
             hit = Gtk.Button()
             hit.add_css_class("ws-hit")
             hit.set_child(dot)
-            hit.set_tooltip_text(f"Workspace {i}  (Super+{i})")
+            hit.set_tooltip_text(tooltip)
             hit.set_focus_on_click(False)
             hit.connect("clicked", lambda _b, n=i: ipc.send("workspace", n))
             self.ws_box.append(hit)

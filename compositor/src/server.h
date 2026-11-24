@@ -48,6 +48,15 @@ struct ts_color {
 	float r, g, b, a;
 };
 
+/* The buttons at the bottom of the lock screen. */
+enum ts_lock_button {
+	TS_LOCK_BUTTON_NONE,
+	TS_LOCK_BUTTON_SLEEP,
+	TS_LOCK_BUTTON_RESTART,
+	TS_LOCK_BUTTON_SHUT_DOWN,
+	TS_LOCK_BUTTON_COUNT,
+};
+
 struct ts_theme {
 	bool dark;
 	struct ts_color background;
@@ -113,6 +122,7 @@ struct ts_output {
 	double master_ratio[TS_WORKSPACES + 1];
 	struct wl_list layers[4];   /* ts_layer_surface.link, by layer */
 	struct ts_lock_surface *lock_surface;
+	struct wlr_box lock_buttons[TS_LOCK_BUTTON_COUNT]; /* output coords */
 	bool dpms_off;
 	struct wlr_scene_buffer *wallpaper;
 	void *wallpaper_surface; /* cairo_surface_t, for the rounded corners */
@@ -184,7 +194,7 @@ struct ts_view {
 	struct wl_listener request_configure;
 	struct wl_listener request_activate;
 	struct wl_listener set_hints;
-	struct wl_listener request_resize_override;
+	struct wl_listener set_override_redirect;
 #endif
 };
 
@@ -247,6 +257,11 @@ struct ts_ipc_client {
 	bool discarding; /* skipping the rest of a request that was too long */
 	char buf[TS_IPC_LINE_MAX];
 	size_t len;
+	char *out;     /* lines waiting until the socket can take them */
+	size_t out_len;
+	size_t out_cap;
+	bool waiting_to_write;
+	bool closing;  /* disconnected for not reading; waiting for the hang-up */
 };
 
 struct ts_server {
@@ -345,6 +360,8 @@ struct ts_server {
 
 	bool super_alone;
 	uint32_t super_keycode;
+	struct ts_view *title_click_view; /* for spotting a double click */
+	uint32_t title_click_time;
 	uint32_t next_view_id;
 
 	/* Three-finger swipes */
@@ -390,6 +407,11 @@ struct ts_server {
 	int auth_fd;
 	struct wl_event_source *auth_source;
 	struct wl_event_source *clock_timer;
+	enum ts_lock_button lock_hover;
+	enum ts_lock_button lock_armed;  /* clicked once; a second click confirms */
+	struct wl_event_source *lock_arm_timer;
+	bool lock_caps;                  /* Caps Lock was on when last drawn */
+	int lock_layout;                 /* keyboard layout when last drawn */
 
 	/* Night light */
 	bool night_active;
@@ -399,7 +421,9 @@ struct ts_server {
 
 	/* Idle */
 	struct wl_event_source *idle_timer;
-	int idle_stage;
+	int idle_elapsed;      /* minutes without input when the timer last fired */
+	int idle_next;         /* minutes without input when it fires next */
+	bool idle_screen_off;  /* the screen was turned off for being idle */
 
 	/* IPC */
 	int ipc_fd;
@@ -492,6 +516,8 @@ void notify_activity(struct ts_server *server);
 void input_begin_move(struct ts_view *view);
 void input_begin_resize(struct ts_view *view, uint32_t edges);
 void input_view_gone(struct ts_view *view);
+bool view_is_hidden(struct ts_view *view);
+void input_cancel_grab(struct ts_server *server);
 
 /* deco.c */
 struct wlr_buffer *deco_render_frame(struct ts_server *server, int w, int h, double scale,
@@ -525,6 +551,11 @@ void lock_init(struct ts_server *server);
 int lock_auth_helper_main(void);
 void lock_engage(struct ts_server *server);
 bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepoint);
+void lock_handle_motion(struct ts_server *server, double lx, double ly);
+void lock_handle_click(struct ts_server *server, double lx, double ly);
+void lock_keyboard_changed(struct ts_server *server);
+bool lock_caps_lock_on(struct ts_server *server);
+const char *lock_layout_name(struct ts_server *server);
 void lock_arrange(struct ts_server *server);
 void lock_output_destroyed(struct ts_output *output);
 
@@ -547,5 +578,6 @@ void idle_update_inhibit(struct ts_server *server);
 /* logind.c */
 void logind_init(struct ts_server *server);
 void logind_release_sleep_lock(struct ts_server *server);
+void logind_power_action(struct ts_server *server, const char *method);
 
 #endif

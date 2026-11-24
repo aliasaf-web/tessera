@@ -1,7 +1,7 @@
 project(
 	'tessera',
 	'c',
-	version: '1.2.0',
+	version: '1.3.0',
 	license: 'MIT',
 	meson_version: '>=0.60.0',
 	default_options: ['c_std=c11', 'warning_level=2', 'werror=false'],
@@ -83,3 +83,5 @@ executable(
 		pangocairo, libdrm, libsystemd, pam, math, xcb],
 	install: true,
 )
+
+test('idle timing', executable('idle_test', 'tests/idle_test.c', build_by_default: false))

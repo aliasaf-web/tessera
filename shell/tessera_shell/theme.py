@@ -247,6 +247,10 @@ button.ws-dot.occupied {
   background: alpha(@text@, 0.75);
 }
 
+button.ws-dot.urgent {
+  background: @accent@;
+}
+
 button.ws-dot.current {
   min-width: 24px;
   background: @accent@;

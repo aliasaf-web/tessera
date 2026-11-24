@@ -221,18 +221,11 @@ class Shell:
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, time.strftime("Screenshot %Y-%m-%d %H-%M-%S.png"))
 
-        def take():
-            args = ["grim"]
-            if area:
-                if not shutil.which("slurp"):
-                    return False
-                sel = subprocess.run(["slurp"], capture_output=True, text=True, check=False)
-                if sel.returncode != 0 or not sel.stdout.strip():
-                    return False
-                args += ["-g", sel.stdout.strip()]
-            args.append(path)
-            if subprocess.run(args, check=False).returncode != 0:
-                return False
+        # Everything runs in the background, so the bar and notifications
+        # keep working while an area is being chosen.
+        def saved(ok, _out):
+            if not ok:
+                return
             if shutil.which("wl-copy"):
                 with open(path, "rb") as f:
                     subprocess.Popen(["wl-copy", "--type", "image/png"], stdin=f,
@@ -242,10 +235,37 @@ class Shell:
                 path, ["open", "Open"],
                 lambda key: Gio.AppInfo.launch_default_for_uri(
                     GLib.filename_to_uri(path, None), None))
+
+        def capture(geometry=None):
+            services.run_async(["grim"] + (["-g", geometry] if geometry else []) + [path], saved)
+
+        def area_chosen(proc, result):
+            try:
+                _ok, out, _err = proc.communicate_utf8_finish(result)
+            except GLib.Error:
+                return
+            geometry = (out or "").strip()
+            if proc.get_successful() and geometry:  # nothing if Escape was pressed
+                capture(geometry)
+
+        def start():
+            if not area:
+                capture()
+                return False
+            if not shutil.which("slurp"):
+                self.notifications.notify_internal("Area screenshots need the “slurp” program",
+                                                   "It is installed by the Tessera installer.")
+                return False
+            try:
+                proc = Gio.Subprocess.new(["slurp"], Gio.SubprocessFlags.STDOUT_PIPE |
+                                          Gio.SubprocessFlags.STDERR_SILENCE)
+            except GLib.Error:
+                return False
+            proc.communicate_utf8_async(None, None, area_chosen)
             return False
 
         # Let the pop-ups disappear before capturing the screen.
-        GLib.timeout_add(250, take)
+        GLib.timeout_add(250, start)
 
     # ---------------------------------------------------------------- battery
 

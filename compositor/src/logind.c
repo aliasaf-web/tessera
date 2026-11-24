@@ -141,3 +141,19 @@ void logind_init(struct ts_server *server) {
 		WL_EVENT_READABLE, bus_readable, server);
 	bus_readable(0, 0, server);
 }
+
+/* Sleep, restart or shut down: method is "Suspend", "Reboot" or "PowerOff".
+ * Allowed for the person at the computer without a password. */
+void logind_power_action(struct ts_server *server, const char *method) {
+	if (server->bus == NULL) {
+		wlr_log(WLR_ERROR, "Can't %s: logind is not available", method);
+		return;
+	}
+	sd_bus_error error = SD_BUS_ERROR_NULL;
+	int r = sd_bus_call_method(server->bus, "org.freedesktop.login1", "/org/freedesktop/login1",
+		"org.freedesktop.login1.Manager", method, &error, NULL, "b", false);
+	if (r < 0) {
+		wlr_log(WLR_ERROR, "Can't %s: %s", method, error.message ? error.message : strerror(-r));
+	}
+	sd_bus_error_free(&error);
+}

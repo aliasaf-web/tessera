@@ -388,6 +388,9 @@ static void keyboard_handle_modifiers(struct wl_listener *listener, void *data) 
 	wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
 	wlr_seat_keyboard_notify_modifiers(server->seat, &keyboard->wlr_keyboard->modifiers);
 	switcher_modifiers(server, wlr_keyboard_get_modifiers(keyboard->wlr_keyboard));
+	if (!keyboard->is_virtual) {
+		lock_keyboard_changed(server); /* Caps Lock note on the lock screen */
+	}
 }
 
 static void update_capabilities(struct ts_server *server);
@@ -501,6 +504,17 @@ static void pointer_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&pointer->destroy.link);
 	wl_list_remove(&pointer->link);
 	free(pointer);
+}
+
+/* True for a mouse or touchpad, false for a pointer made by an app. */
+static bool pointer_is_real(struct ts_server *server, struct wlr_pointer *wlr_pointer) {
+	struct ts_pointer *pointer;
+	wl_list_for_each(pointer, &server->pointers, link) {
+		if (pointer->device == &wlr_pointer->base) {
+			return true;
+		}
+	}
+	return false;
 }
 
 static void new_pointer(struct ts_server *server, struct wlr_input_device *device) {
@@ -711,7 +725,9 @@ static void process_motion(struct ts_server *server, uint32_t time) {
 
 	if (server->locked) {
 		wlr_seat_pointer_clear_focus(seat);
-		set_cursor_image(server, "default");
+		lock_handle_motion(server, lx, ly);
+		set_cursor_image(server,
+			server->lock_hover != TS_LOCK_BUTTON_NONE ? "pointer" : "default");
 		return;
 	}
 
@@ -787,8 +803,23 @@ static void end_grab(struct ts_server *server) {
 	cursor_rebase(server);
 }
 
+/* Stops a window drag or resize without finishing it (the screen locked). */
+void input_cancel_grab(struct ts_server *server) {
+	if (server->cursor_mode == TS_CURSOR_PASSTHROUGH) {
+		return;
+	}
+	update_drop_hint(server, NULL);
+	server->cursor_mode = TS_CURSOR_PASSTHROUGH;
+	server->grab_view = NULL;
+	server->ratio_output = NULL;
+	server->cursor_image = NULL;
+}
+
 void input_view_gone(struct ts_view *view) {
 	struct ts_server *server = view->server;
+	if (server->title_click_view == view) {
+		server->title_click_view = NULL;
+	}
 	if (server->grab_view == view) {
 		update_drop_hint(server, NULL);
 		server->cursor_mode = TS_CURSOR_PASSTHROUGH;
@@ -856,6 +887,10 @@ static void cursor_button(struct wl_listener *listener, void *data) {
 
 	bool pressed = event->state == WL_POINTER_BUTTON_STATE_PRESSED;
 	if (server->locked) {
+		/* Only a real mouse or touchpad can use the lock screen's buttons. */
+		if (pressed && event->button == BTN_LEFT && pointer_is_real(server, event->pointer)) {
+			lock_handle_click(server, server->cursor->x, server->cursor->y);
+		}
 		return;
 	}
 
@@ -899,16 +934,15 @@ static void cursor_button(struct wl_listener *listener, void *data) {
 				server->grab_view = hit.view;
 				return;
 			}
-			static uint32_t last_click;
-			static struct ts_view *last_view;
-			if (hit.fy < deco_titlebar_height() && last_view == hit.view &&
-					event->time_msec - last_click < 400) {
-				last_view = NULL;
+			/* A double click on the title bar maximizes. */
+			if (hit.fy < deco_titlebar_height() && server->title_click_view == hit.view &&
+					event->time_msec - server->title_click_time < 400) {
+				server->title_click_view = NULL;
 				view_set_maximized(hit.view, !hit.view->maximized);
 				return;
 			}
-			last_click = event->time_msec;
-			last_view = hit.view;
+			server->title_click_time = event->time_msec;
+			server->title_click_view = hit.view;
 			if (hit.view->floating) {
 				/* Edges of a floating window resize it. */
 				int edge = 8;

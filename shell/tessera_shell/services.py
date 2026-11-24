@@ -67,20 +67,33 @@ def run_async(args, done=None):
 # --------------------------------------------------------------------------
 
 class Audio(Service):
+    """Volume of the default output, through wpctl. Changes show at once and
+    are sent in the background; while one is being sent, the next waits and
+    only the latest value is used, so dragging the slider stays smooth."""
+
+    WATCHED = re.compile(r"^Event '\w+' on (sink|server) #")
+
     def __init__(self):
         super().__init__()
         self.available = shutil.which("wpctl") is not None
         self.volume = 0.0
         self.muted = False
         self._watch = None
+        self._sending = False
+        self._wanted = None       # volume still to send
+        self._refresh_source = None
         if self.available:
             self.refresh()
             self._start_watch()
             GLib.timeout_add_seconds(10, self._poll)
 
     def refresh(self):
-        code, out = run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], timeout=2)
-        if code != 0:
+        if not self.available or self._sending:
+            return  # the state is read again when sending is done
+        run_async(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], self._got_volume)
+
+    def _got_volume(self, ok, out):
+        if not ok or self._sending:
             return
         m = re.search(r"Volume:\s*([0-9.]+)", out)
         volume = float(m.group(1)) if m else 0.0
@@ -88,6 +101,16 @@ class Audio(Service):
         if abs(volume - self.volume) > 0.001 or muted != self.muted:
             self.volume, self.muted = volume, muted
             self.changed()
+
+    def _refresh_soon(self):
+        """Several changes in a row lead to one refresh."""
+        if self._refresh_source is None:
+            self._refresh_source = GLib.timeout_add(150, self._refresh_now)
+
+    def _refresh_now(self):
+        self._refresh_source = None
+        self.refresh()
+        return False
 
     def _poll(self):
         if self._watch is None:
@@ -114,32 +137,58 @@ class Audio(Service):
             if line is None:
                 self._watch = None
                 return
-            if "sink" in line or "server" in line:
-                GLib.idle_add(self._idle_refresh)
+            # Only the outputs and the default device; not every app's stream.
+            if self.WATCHED.match(line):
+                self._refresh_soon()
             s.read_line_async(GLib.PRIORITY_LOW, None, on_line)
 
         stream.read_line_async(GLib.PRIORITY_LOW, None, on_line)
 
-    def _idle_refresh(self):
-        self.refresh()
-        return False
-
     def set_volume(self, value):
         value = max(0.0, min(1.0, value))
-        run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{value:.2f}"], timeout=2)
-        if self.muted and value > 0:
-            run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "0"], timeout=2)
-        self.refresh()
+        unmute = self.muted and value > 0
+        self.volume = value
+        if unmute:
+            self.muted = False
+        self.changed()
+        self._wanted = (value, unmute or (self._wanted is not None and self._wanted[1]))
+        self._send()
+
+    def _send(self):
+        if self._sending or self._wanted is None:
+            return
+        value, unmute = self._wanted
+        self._wanted = None
+        self._sending = True
+
+        def volume_done(_ok, _out):
+            if unmute:
+                run_async(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "0"], sent)
+            else:
+                sent(True, "")
+
+        def sent(_ok, _out):
+            self._sending = False
+            if self._wanted is not None:
+                self._send()
+            else:
+                self.refresh()
+
+        run_async(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{value:.2f}"], volume_done)
 
     def step(self, delta):
         self.set_volume(round((self.volume + delta) * 20) / 20)
 
     def toggle_mute(self):
-        run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"], timeout=2)
-        self.refresh()
+        if not self.available:
+            return
+        self.muted = not self.muted
+        self.changed()
+        run_async(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
+                  lambda _ok, _out: self._refresh_soon())
 
     def toggle_mic(self):
-        run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"], timeout=2)
+        run_async(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"])
 
     def icon(self):
         if self.muted or self.volume <= 0.001:

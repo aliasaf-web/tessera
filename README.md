@@ -113,7 +113,14 @@ Wi-Fi, Bluetooth, volume, brightness, dark mode, night light, **Sleep**,
 **Restart** and **Shut down** are all in quick settings (click the clock).
 
 The dots at the bottom left show your workspaces: the long one is where you are.
-Click a dot, or scroll over them, to move between workspaces.
+Click a dot, or scroll over them, to move between workspaces. A dot in your
+highlight colour means a window there needs you (for example, it opened a
+question while you were somewhere else).
+
+The lock screen has **Sleep**, **Restart** and **Shut down** buttons at the
+bottom (Restart and Shut down ask you to click twice, because open apps close).
+The power button puts the laptop to sleep from there. If Caps Lock is on, the
+lock screen tells you.
 
 Screenshots are saved in **Pictures › Screenshots** and copied, so you can paste them straight away.
 

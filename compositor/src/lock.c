@@ -15,6 +15,8 @@
  * through it and it cannot crash separately from the desktop. Passwords
  * are checked with PAM in a short-lived child process. */
 
+static int current_layout(struct ts_server *server);
+
 static void lock_redraw(struct ts_server *server) {
 	struct ts_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
@@ -79,6 +81,14 @@ void lock_engage(struct ts_server *server) {
 		return;
 	}
 	server->locked = true;
+	server->lock_hover = TS_LOCK_BUTTON_NONE;
+	server->lock_armed = TS_LOCK_BUTTON_NONE;
+	server->lock_caps = lock_caps_lock_on(server);
+	server->lock_layout = current_layout(server);
+	input_cancel_grab(server);
+	if (server->switcher_active) {
+		switcher_finish(server, false);
+	}
 	server->password_len = 0;
 	explicit_bzero(server->password, sizeof(server->password));
 	server->auth_failed = false;
@@ -92,6 +102,8 @@ void lock_engage(struct ts_server *server) {
 
 static void lock_release(struct ts_server *server) {
 	server->locked = false;
+	server->lock_armed = TS_LOCK_BUTTON_NONE;
+	wl_event_source_timer_update(server->lock_arm_timer, 0);
 	server->auth_failed = false;
 	server->auth_failures = 0;
 	server->auth_wait = 0;
@@ -319,10 +331,134 @@ static void append_utf8(struct ts_server *server, uint32_t cp) {
 	server->password[server->password_len] = '\0';
 }
 
+/* ---- Sleep, Restart and Shut down ---- */
+
+static void disarm(struct ts_server *server) {
+	if (server->lock_armed != TS_LOCK_BUTTON_NONE) {
+		server->lock_armed = TS_LOCK_BUTTON_NONE;
+		wl_event_source_timer_update(server->lock_arm_timer, 0);
+		lock_redraw(server);
+	}
+}
+
+static int arm_expired(void *data) {
+	disarm(data);
+	return 0;
+}
+
+/* Sleep happens at once. Restart and Shut down close every app, so they
+ * ask for a second click within a few seconds. */
+static void press_button(struct ts_server *server, enum ts_lock_button button) {
+	if (button == TS_LOCK_BUTTON_SLEEP) {
+		disarm(server);
+		logind_power_action(server, "Suspend");
+		return;
+	}
+	if (server->lock_armed != button) {
+		server->lock_armed = button;
+		wl_event_source_timer_update(server->lock_arm_timer, 5000);
+		lock_redraw(server);
+		return;
+	}
+	disarm(server);
+	logind_power_action(server, button == TS_LOCK_BUTTON_RESTART ? "Reboot" : "PowerOff");
+}
+
+static enum ts_lock_button button_at(struct ts_server *server, double lx, double ly) {
+	struct wlr_output *wlr_output = wlr_output_layout_output_at(server->output_layout, lx, ly);
+	struct ts_output *output = wlr_output ? wlr_output->data : NULL;
+	if (output == NULL) {
+		return TS_LOCK_BUTTON_NONE;
+	}
+	struct wlr_box box;
+	wlr_output_layout_get_box(server->output_layout, wlr_output, &box);
+	for (int i = TS_LOCK_BUTTON_NONE + 1; i < TS_LOCK_BUTTON_COUNT; i++) {
+		if (wlr_box_contains_point(&output->lock_buttons[i], lx - box.x, ly - box.y)) {
+			return i;
+		}
+	}
+	return TS_LOCK_BUTTON_NONE;
+}
+
+void lock_handle_motion(struct ts_server *server, double lx, double ly) {
+	enum ts_lock_button hover = button_at(server, lx, ly);
+	if (hover != server->lock_hover) {
+		server->lock_hover = hover;
+		lock_redraw(server);
+	}
+}
+
+void lock_handle_click(struct ts_server *server, double lx, double ly) {
+	enum ts_lock_button button = button_at(server, lx, ly);
+	if (button == TS_LOCK_BUTTON_NONE) {
+		disarm(server);
+	} else {
+		press_button(server, button);
+	}
+}
+
+/* ---- Caps Lock and the keyboard layout, shown under the password ---- */
+
+static struct ts_keyboard *real_keyboard(struct ts_server *server) {
+	struct ts_keyboard *keyboard;
+	wl_list_for_each(keyboard, &server->keyboards, link) {
+		if (!keyboard->is_virtual && keyboard->wlr_keyboard->xkb_state) {
+			return keyboard;
+		}
+	}
+	return NULL;
+}
+
+bool lock_caps_lock_on(struct ts_server *server) {
+	struct ts_keyboard *keyboard = real_keyboard(server);
+	/* Asked of xkb: wlroots' modifier list leaves out locked keys. */
+	return keyboard && xkb_state_mod_name_is_active(keyboard->wlr_keyboard->xkb_state,
+		XKB_MOD_NAME_CAPS, XKB_STATE_MODS_EFFECTIVE) > 0;
+}
+
+static int current_layout(struct ts_server *server) {
+	struct ts_keyboard *keyboard = real_keyboard(server);
+	if (keyboard == NULL) {
+		return -1;
+	}
+	return (int)xkb_state_serialize_layout(keyboard->wlr_keyboard->xkb_state,
+		XKB_STATE_LAYOUT_EFFECTIVE);
+}
+
+/* The name of the layout in use, or NULL when there is only one. */
+const char *lock_layout_name(struct ts_server *server) {
+	struct ts_keyboard *keyboard = real_keyboard(server);
+	if (keyboard == NULL || keyboard->wlr_keyboard->keymap == NULL ||
+			xkb_keymap_num_layouts(keyboard->wlr_keyboard->keymap) < 2) {
+		return NULL;
+	}
+	return xkb_keymap_layout_get_name(keyboard->wlr_keyboard->keymap,
+		(xkb_layout_index_t)current_layout(server));
+}
+
+void lock_keyboard_changed(struct ts_server *server) {
+	if (!server->locked) {
+		return;
+	}
+	bool caps = lock_caps_lock_on(server);
+	int layout = current_layout(server);
+	if (caps != server->lock_caps || layout != server->lock_layout) {
+		server->lock_caps = caps;
+		server->lock_layout = layout;
+		lock_redraw(server);
+	}
+}
+
 bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepoint) {
+	if (sym == XKB_KEY_XF86PowerOff) {
+		/* The power button puts the computer to sleep from here. */
+		press_button(server, TS_LOCK_BUTTON_SLEEP);
+		return true;
+	}
 	if (!server->locked || server->auth_busy || server->auth_wait > 0) {
 		return true;
 	}
+	disarm(server);
 	switch (sym) {
 	case XKB_KEY_Return:
 	case XKB_KEY_KP_Enter:
@@ -351,6 +487,7 @@ bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepo
 
 void lock_init(struct ts_server *server) {
 	server->auth_wait_timer = wl_event_loop_add_timer(server->loop, wait_tick, server);
+	server->lock_arm_timer = wl_event_loop_add_timer(server->loop, arm_expired, server);
 	server->clock_timer = wl_event_loop_add_timer(server->loop, clock_tick, server);
 	wl_event_source_timer_update(server->clock_timer, 15000);
 }

@@ -52,18 +52,73 @@ void ipc_json_escape(char *out, size_t size, const char *in) {
 	out[o] = '\0';
 }
 
+/* A client that stops reading is disconnected rather than queued forever. */
+#define IPC_QUEUE_MAX (4 * 1024 * 1024)
+
+/* Sends as much of the queue as the socket takes now; the rest goes when
+ * it becomes writable again, so lines always arrive whole. */
+static void client_flush(struct ts_ipc_client *client) {
+	size_t done = 0;
+	while (done < client->out_len) {
+		ssize_t n = send(client->fd, client->out + done, client->out_len - done, MSG_NOSIGNAL);
+		if (n < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			if (errno != EAGAIN) {
+				done = client->out_len; /* gone: the hang-up is handled on read */
+			}
+			break;
+		}
+		done += (size_t)n;
+	}
+	memmove(client->out, client->out + done, client->out_len - done);
+	client->out_len -= done;
+	bool waiting = client->out_len > 0;
+	if (waiting != client->waiting_to_write) {
+		client->waiting_to_write = waiting;
+		wl_event_source_fd_update(client->source,
+			WL_EVENT_READABLE | (waiting ? WL_EVENT_WRITABLE : 0));
+	}
+}
+
 static void client_write(struct ts_ipc_client *client, const char *line) {
-	size_t len = strlen(line);
-	/* Non-blocking: a client that doesn't read just misses updates. */
-	if (write(client->fd, line, len) < 0 || write(client->fd, "\n", 1) < 0) {
+	if (client->closing) {
 		return;
 	}
+	size_t len = strlen(line) + 1; /* with its newline */
+	size_t need = client->out_len + len;
+	if (need > IPC_QUEUE_MAX) {
+		wlr_log(WLR_INFO, "Disconnecting a control client that stopped reading");
+		client->closing = true;
+		client->out_len = 0;
+		shutdown(client->fd, SHUT_RDWR);
+		return;
+	}
+	if (need > client->out_cap) {
+		size_t cap = client->out_cap ? client->out_cap : 4096;
+		while (cap < need) {
+			cap *= 2;
+		}
+		char *out = realloc(client->out, cap);
+		if (out == NULL) {
+			wlr_log(WLR_ERROR, "Out of memory");
+			return;
+		}
+		client->out = out;
+		client->out_cap = cap;
+	}
+	memcpy(client->out + client->out_len, line, len - 1);
+	client->out[client->out_len + len - 1] = '\n';
+	client->out_len = need;
+	client_flush(client);
 }
 
 static void client_destroy(struct ts_ipc_client *client) {
 	wl_event_source_remove(client->source);
 	close(client->fd);
 	wl_list_remove(&client->link);
+	free(client->out);
 	free(client);
 }
 
@@ -80,17 +135,24 @@ static void state_json(struct ts_server *server, char *buf, size_t size) {
 	struct ts_output *output = output_focused(server);
 	int current = output ? output->workspace : 1;
 	bool occupied[TS_WORKSPACES + 1] = {0};
+	bool urgent[TS_WORKSPACES + 1] = {0};
 	struct ts_view *view;
 	wl_list_for_each(view, &server->views, link) {
 		if (view->mapped && view->output == output) {
 			occupied[view->workspace] = true;
+			if (view->urgent && view->workspace != current) {
+				urgent[view->workspace] = true;
+			}
 		}
 	}
-	char occ[64] = "";
-	size_t o = 0;
+	char occ[64] = "", urg[64] = "";
+	size_t o = 0, u = 0;
 	for (int i = 1; i <= TS_WORKSPACES; i++) {
 		if (occupied[i]) {
 			o += snprintf(occ + o, sizeof(occ) - o, "%s%d", o ? "," : "", i);
+		}
+		if (urgent[i]) {
+			u += snprintf(urg + u, sizeof(urg) - u, "%s%d", u ? "," : "", i);
 		}
 	}
 	char title[512] = "", app[256] = "";
@@ -100,9 +162,9 @@ static void state_json(struct ts_server *server, char *buf, size_t size) {
 	}
 	snprintf(buf, size,
 		"{\"event\":\"state\",\"workspace\":%d,\"workspaces\":%d,\"occupied\":[%s],"
-		"\"title\":\"%s\",\"app_id\":\"%s\",\"locked\":%s,\"theme\":\"%s\","
+		"\"urgent\":[%s],\"title\":\"%s\",\"app_id\":\"%s\",\"locked\":%s,\"theme\":\"%s\","
 		"\"night_light\":%s,\"compact\":%s}",
-		current, TS_WORKSPACES, occ, title, app, server->locked ? "true" : "false",
+		current, TS_WORKSPACES, occ, urg, title, app, server->locked ? "true" : "false",
 		server->theme.dark ? "dark" : "light", server->night_active ? "true" : "false",
 		output && output_is_compact(output) ? "true" : "false");
 }
@@ -228,6 +290,12 @@ static int client_readable(int fd, uint32_t mask, void *data) {
 	struct ts_ipc_client *client = data;
 	if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) {
 		client_destroy(client);
+		return 0;
+	}
+	if (mask & WL_EVENT_WRITABLE) {
+		client_flush(client);
+	}
+	if (!(mask & WL_EVENT_READABLE)) {
 		return 0;
 	}
 	ssize_t n = read(fd, client->buf + client->len, sizeof(client->buf) - client->len - 1);
