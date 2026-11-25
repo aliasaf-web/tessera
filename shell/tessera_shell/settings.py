@@ -21,6 +21,7 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
 from . import __version__, ipc  # noqa: E402
+from .terminal import terminal_command  # noqa: E402
 from .theme import ACCENTS, read_config, write_config_value  # noqa: E402
 
 ACCENT_LABELS = {
@@ -33,6 +34,7 @@ MINUTE_CHOICES = [(1, "1 minute"), (2, "2 minutes"), (5, "5 minutes"), (10, "10 
 
 SCALES = [("auto", "Automatic"), ("1", "100%"), ("1.25", "125%"), ("1.5", "150%"),
           ("1.75", "175%"), ("2", "200%")]
+SIZE_HINT = "Bigger is easier to read; smaller fits more"
 
 SIZES = [("auto", "Automatic"), ("compact", "Compact"), ("comfortable", "Comfortable")]
 
@@ -152,8 +154,9 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.sidebar.connect("row-selected", self._on_section)
 
         for key, title, icon_name, builder in (
-                ("appearance", "Appearance", "applications-graphics-symbolic", self.page_appearance),
-                ("display", "Display", "video-display-symbolic", self.page_display),
+                ("appearance", "Appearance", "applications-graphics-symbolic",
+                 self.page_appearance),
+                ("display", "Displays", "video-display-symbolic", self.page_display),
                 ("touchpad", "Touchpad & mouse", "input-mouse-symbolic", self.page_touchpad),
                 ("keyboard", "Keyboard", "input-keyboard-symbolic", self.page_keyboard),
                 ("sound", "Sound", "audio-speakers-symbolic", self.page_sound),
@@ -200,11 +203,16 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.events = ipc.EventStream(self._on_event)
 
     def _on_event(self, event):
+        row = self.sidebar.get_selected_row()
+        if event.get("event") == "outputs":
+            # A screen was plugged in or out, or the screens were set up again.
+            if row is not None and row.key == "display" and self.reload_source is None:
+                self.show_page("display")
+            return
         if event.get("event") != "reload" or self.reload_source is not None:
             return
         if read_config() == self.cfg:
             return
-        row = self.sidebar.get_selected_row()
         if row is not None:
             self.show_page(row.key)
         self.apply_style()
@@ -330,7 +338,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         light_button = Gtk.ToggleButton(label="Light")
         light_button.set_group(dark_button)
         (dark_button if dark else light_button).set_active(True)
-        dark_button.connect("toggled", lambda b: self.save("theme", "dark" if b.get_active() else "light"))
+        dark_button.connect("toggled",
+                            lambda b: self.save("theme", "dark" if b.get_active() else "light"))
         buttons.append(dark_button)
         buttons.append(light_button)
         row.add_suffix(buttons)
@@ -421,7 +430,8 @@ class SettingsWindow(Adw.ApplicationWindow):
                 return
             try:
                 # Store a copy no bigger than a 4K screen; the desktop reads PNG.
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(chosen.get_path(), 3840, 2160, True)
+                path = chosen.get_path()
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 3840, 2160, True)
                 os.makedirs(data_dir(), exist_ok=True)
                 target = os.path.join(data_dir(), "wallpaper.png")
                 pixbuf.savev(target, "png", [], [])
@@ -436,10 +446,19 @@ class SettingsWindow(Adw.ApplicationWindow):
     # --------------------------------------------------------------- Display
 
     def page_display(self):
-        screen = Adw.PreferencesGroup(title="Screen")
-        scale = self.cfg.get("scale", "auto") or "auto"
-        screen.add(self.combo("Size of everything", "Bigger is easier to read; smaller fits more",
-                              SCALES, scale, lambda v: self.save("scale", v)))
+        outputs = (ipc.send("outputs") or {}).get("outputs", [])
+        groups = []
+        main = next((o for o in outputs if o["main"]), None)
+        for output in outputs:
+            groups.append(self.display_group(output, outputs, main))
+        if not outputs:
+            # The window manager can't be asked (Settings started outside
+            # Tessera): the size of everything is all that can be chosen.
+            screen = Adw.PreferencesGroup(title="Screen")
+            scale = self.cfg.get("scale", "auto") or "auto"
+            screen.add(self.combo("Size of everything", SIZE_HINT, SCALES, scale,
+                                  lambda v: self.save("scale", v)))
+            groups.append(screen)
 
         night = Adw.PreferencesGroup(
             title="Night light",
@@ -476,11 +495,117 @@ class SettingsWindow(Adw.ApplicationWindow):
         for row in (when, start, end, warmth):
             night.add(row)
             row.set_sensitive(mode != "off")
-        when.connect("notify::selected", lambda r, _p: (start.set_visible(r.get_selected() == 0),
-                                                         end.set_visible(r.get_selected() == 0)))
+        when.connect("notify::selected",
+                     lambda r, _p: (start.set_visible(r.get_selected() == 0),
+                                    end.set_visible(r.get_selected() == 0)))
         start.set_visible(mode != "always")
         end.set_visible(mode != "always")
-        return self.page_with(screen, night)
+        return self.page_with(*groups, night)
+
+    @staticmethod
+    def display_title(output):
+        if output["builtin"]:
+            return "Built-in screen"
+        name = " ".join(part for part in (output["make"], output["model"])
+                        if part and part.lower() != "unknown")
+        return name or output["name"]
+
+    def display_group(self, output, outputs, main):
+        """One screen: on or off, resolution, size of everything, and where it
+        is next to the main screen (or showing the same picture)."""
+        name = output["name"]
+        key = f"display.{name}."
+        group = Adw.PreferencesGroup(title=self.display_title(output),
+                                     description=f"Plugged into {name}")
+        rows = []
+        if len(outputs) > 1:
+            group.add(self.switch("Use this screen", None, output["enabled"],
+                                  lambda on: self.change_display(key + "enabled",
+                                                                 "true" if on else "false")))
+
+        sizes = {}
+        for mode in output["modes"]:
+            size = (mode["width"], mode["height"])
+            sizes[size] = sizes.get(size, False) or mode["preferred"]
+        if sizes:
+            choices = [("auto", "Recommended")] + [
+                (f"{w}x{h}", f"{w} × {h}" + ("  (recommended)" if preferred else ""))
+                for (w, h), preferred in sorted(sizes.items(), key=lambda i: -i[0][0] * i[0][1])]
+            current = (self.cfg.get(key + "mode", "auto") or "auto").split("@")[0]
+            rows.append(self.combo("Resolution", None, choices, current,
+                                   lambda v: self.change_display(key + "mode", v)))
+
+        scale = self.cfg.get(key + "scale") or self.cfg.get("scale", "auto") or "auto"
+        size_row = self.combo("Size of everything", SIZE_HINT, SCALES, scale,
+                              lambda v: self.change_display(key + "scale", v))
+        if output["mirror"]:
+            size_row.set_subtitle("Follows the main screen while showing the same picture")
+            size_row.set_sensitive(False)
+        rows.append(size_row)
+
+        if main is not None and output is not main:
+            other = "the built-in screen" if main["builtin"] else "the main screen"
+            choices = [("right", "On the right"), ("left", "On the left"), ("above", "Above"),
+                       ("below", "Below"), ("mirror", "Same picture (mirror)")]
+            current = self.cfg.get(key + "position", "auto") or "auto"
+            if current not in dict(choices):
+                current = "right"
+            rows.append(self.combo("Position", f"Compared with {other}", choices, current,
+                                   lambda v: self.change_display(key + "position", v)))
+        for row in rows:
+            row.set_sensitive(row.get_sensitive() and output["enabled"])
+            group.add(row)
+        return group
+
+    def change_display(self, key, value):
+        """Screen changes are tried out: unless they are kept, they are undone
+        after 15 seconds, in case the screen can't show them."""
+        if self.loading:
+            return
+        field = key.rsplit(".", 1)[1]
+        previous = self.cfg.get(key) or ("true" if field == "enabled" else "auto")
+        if field == "scale" and key not in self.cfg:
+            previous = self.cfg.get("scale", "auto") or "auto"
+        if value == previous:
+            return
+        self.save(key, value)
+
+        state = {"left": 15, "done": False, "timer": None}
+        dialog = Adw.AlertDialog(heading="Keep these display settings?")
+
+        def body():
+            return (f"If you don't choose, the old settings come back in {state['left']} "
+                    f"second{'s' if state['left'] != 1 else ''}.")
+
+        def finish(keep):
+            if state["done"]:
+                return
+            state["done"] = True
+            if state["timer"] is not None:
+                GLib.source_remove(state["timer"])
+                state["timer"] = None
+            if not keep:
+                self.save(key, previous)
+                self.show_page("display")
+
+        def tick():
+            state["left"] -= 1
+            if state["left"] > 0:
+                dialog.set_body(body())
+                return True
+            state["timer"] = None
+            finish(False)
+            dialog.force_close()
+            return False
+
+        dialog.set_body(body())
+        dialog.add_response("undo", "Undo")
+        dialog.add_response("keep", "Keep")
+        dialog.set_response_appearance("keep", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_close_response("undo")
+        dialog.connect("response", lambda _d, response: finish(response == "keep"))
+        state["timer"] = GLib.timeout_add_seconds(1, tick)
+        dialog.present(self)
 
     # -------------------------------------------------------------- Touchpad
 
@@ -489,7 +614,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         touchpad.add(self.switch("Tap to click", "Tap the touchpad instead of pressing it",
                                  self.flag("tap_to_click", True),
                                  lambda on: self.save("tap_to_click", "true" if on else "false")))
-        touchpad.add(self.switch("Natural scrolling", "Content follows your fingers, like on a phone",
+        touchpad.add(self.switch("Natural scrolling",
+                                 "Content follows your fingers, like on a phone",
                                  self.flag("natural_scroll", False),
                                  lambda on: self.save("natural_scroll", "true" if on else "false")))
         try:
@@ -679,12 +805,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         return self.page_with(group, update)
 
     def run_update(self):
-        terminal = self.cfg.get("terminal", "") or "x-terminal-emulator"
         script = ("tessera-update; echo; printf 'Press Enter to close this window. '; read _")
-        if shutil.which("foot") and terminal.split()[0] == "foot":
-            args = ["foot", "--title", "Updating Tessera", "sh", "-c", script]
-        else:
-            args = [terminal.split()[0], "-e", "sh", "-c", script]
+        args = terminal_command(self.cfg.get("terminal", ""), ["sh", "-c", script])
         try:
             subprocess.Popen(args, start_new_session=True)
         except OSError as exc:

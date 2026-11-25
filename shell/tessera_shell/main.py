@@ -276,8 +276,8 @@ class Shell:
             return
         if not bat.charging and bat.percent <= 10 and not self._low_battery_warned:
             self._low_battery_warned = True
-            self.notifications.show("Battery", 0, "battery-caution-symbolic",
-                                    "Battery is low", f"{bat.percent}% left. Plug in your charger soon.",
+            self.notifications.show("Battery", 0, "battery-caution-symbolic", "Battery is low",
+                                    f"{bat.percent}% left. Plug in your charger soon.",
                                     [], {"urgency": 2}, 0)
         elif bat.charging or bat.percent > 15:
             self._low_battery_warned = False

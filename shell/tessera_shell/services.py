@@ -258,8 +258,8 @@ class Brightness(Service):
                     Gio.BusType.SYSTEM, Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES, None,
                     "org.freedesktop.login1", "/org/freedesktop/login1/session/auto",
                     "org.freedesktop.login1.Session", None)
-            self.proxy.call_sync("SetBrightness",
-                                 GLib.Variant("(ssu)", ("backlight", os.path.basename(self.device), value)),
+            name = os.path.basename(self.device)
+            self.proxy.call_sync("SetBrightness", GLib.Variant("(ssu)", ("backlight", name, value)),
                                  Gio.DBusCallFlags.NONE, 1000, None)
         except GLib.Error as exc:
             print(f"tessera-shell: brightness: {exc.message}")
@@ -561,7 +561,8 @@ class Network(Service):
             if not ssid:
                 continue  # hidden network
             strength = _prop(ap, "Strength", 0)
-            flags, wpa, rsn = _prop(ap, "Flags", 0), _prop(ap, "WpaFlags", 0), _prop(ap, "RsnFlags", 0)
+            flags = _prop(ap, "Flags", 0)
+            wpa, rsn = _prop(ap, "WpaFlags", 0), _prop(ap, "RsnFlags", 0)
             is_active = path in active
             if is_active:
                 self.connected_ssid, self.signal = ssid, strength
@@ -630,7 +631,8 @@ class Network(Service):
 
     def _wifi_device_for(self, ap_path):
         for path, dev in self._devices.items():
-            if dev["wireless"] is not None and ap_path in _prop(dev["wireless"], "AccessPoints", []):
+            wireless = dev["wireless"]
+            if wireless is not None and ap_path in _prop(wireless, "AccessPoints", []):
                 return path
         return None
 
@@ -984,13 +986,25 @@ class Bluetooth(Service):
     <node>
       <interface name="org.bluez.Agent1">
         <method name="Release"/>
-        <method name="RequestPinCode"><arg type="o" direction="in"/><arg type="s" direction="out"/></method>
-        <method name="DisplayPinCode"><arg type="o" direction="in"/><arg type="s" direction="in"/></method>
-        <method name="RequestPasskey"><arg type="o" direction="in"/><arg type="u" direction="out"/></method>
-        <method name="DisplayPasskey"><arg type="o" direction="in"/><arg type="u" direction="in"/><arg type="q" direction="in"/></method>
-        <method name="RequestConfirmation"><arg type="o" direction="in"/><arg type="u" direction="in"/></method>
+        <method name="RequestPinCode">
+          <arg type="o" direction="in"/><arg type="s" direction="out"/>
+        </method>
+        <method name="DisplayPinCode">
+          <arg type="o" direction="in"/><arg type="s" direction="in"/>
+        </method>
+        <method name="RequestPasskey">
+          <arg type="o" direction="in"/><arg type="u" direction="out"/>
+        </method>
+        <method name="DisplayPasskey">
+          <arg type="o" direction="in"/><arg type="u" direction="in"/><arg type="q" direction="in"/>
+        </method>
+        <method name="RequestConfirmation">
+          <arg type="o" direction="in"/><arg type="u" direction="in"/>
+        </method>
         <method name="RequestAuthorization"><arg type="o" direction="in"/></method>
-        <method name="AuthorizeService"><arg type="o" direction="in"/><arg type="s" direction="in"/></method>
+        <method name="AuthorizeService">
+          <arg type="o" direction="in"/><arg type="s" direction="in"/>
+        </method>
         <method name="Cancel"/>
       </interface>
     </node>"""

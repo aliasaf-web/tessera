@@ -121,7 +121,8 @@ class Notifications:
             invocation.return_value(GLib.Variant("(as)", (["body", "body-markup", "actions",
                                                            "icon-static", "persistence"],)))
         elif method == "GetServerInformation":
-            invocation.return_value(GLib.Variant("(ssss)", ("Tessera", "Tessera", __version__, "1.2")))
+            invocation.return_value(GLib.Variant("(ssss)",
+                                                 ("Tessera", "Tessera", __version__, "1.2")))
         elif method == "CloseNotification":
             (nid,) = params.unpack()
             self.close(nid, 3)

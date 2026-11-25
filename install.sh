@@ -18,7 +18,7 @@ cd "$(dirname "$0")"
 SRC="$(pwd)"
 PREFIX=/usr/local
 ME="$(id -un)"
-TESSERA_VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$SRC/shell/tessera_shell/__init__.py")"
+TESSERA_VERSION="$(cat "$SRC/VERSION")"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*"; }
@@ -36,7 +36,9 @@ if ! command -v sudo >/dev/null 2>&1 || ! sudo -v; then
 Then log out, log back in as $ME and run this installer again."
 fi
 # Read in a subshell: /etc/os-release sets variables such as VERSION.
+# shellcheck source=/dev/null
 CODENAME="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"
+# shellcheck source=/dev/null
 SYSTEM="$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-an unknown system}")"
 if [ "$CODENAME" != "trixie" ]; then
 	warn "This was made for Debian 13 (trixie); you have $SYSTEM."
@@ -178,6 +180,7 @@ say "Installing the Tessera shell and settings"
 sudo install -d "$PREFIX/share/tessera/shell"
 sudo rm -rf "$PREFIX/share/tessera/shell/tessera_shell"
 sudo cp -r "$SRC/shell/tessera_shell" "$PREFIX/share/tessera/shell/"
+sudo install -m 644 "$SRC/VERSION" "$PREFIX/share/tessera/VERSION"
 sudo find "$PREFIX/share/tessera/shell" -name '__pycache__' -prune -exec rm -rf {} +
 for script in tessera-session tessera-autostart tessera-shell tessera-settings tessera-update; do
 	sudo install -m 755 "$SRC/data/$script" "$PREFIX/bin/$script"

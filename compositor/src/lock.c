@@ -138,6 +138,7 @@ void lock_engage(struct ts_server *server) {
 	server->auth_failed = false;
 	wlr_seat_keyboard_notify_clear_focus(server->seat);
 	wlr_seat_pointer_clear_focus(server->seat);
+	input_constraint_update(server); /* lets go of a held pointer */
 	lock_arrange(server);
 	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 	server->cursor_image = "default";

@@ -29,8 +29,8 @@ static void switcher_send(struct ts_server *server) {
 	for (int i = 0; i < server->switcher_count && o < size; i++) {
 		struct ts_view *view = view_by_id(server, server->switcher_ids[i]);
 		char title[TITLE_LEN], app[APP_ID_LEN];
-		ipc_json_escape(title, sizeof(title), view ? view_title(view) : "");
-		ipc_json_escape(app, sizeof(app), view ? view_app_id(view) : "");
+		json_escape(title, sizeof(title), view ? view_title(view) : "");
+		json_escape(app, sizeof(app), view ? view_app_id(view) : "");
 		o += snprintf(buf + o, size - o,
 			"%s{\"id\":%u,\"title\":\"%s\",\"app_id\":\"%s\",\"workspace\":%d}",
 			first ? "" : ",", server->switcher_ids[i], title, app,

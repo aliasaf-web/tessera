@@ -27,31 +27,6 @@ static bool socket_path(char *buf, size_t size, const char *display) {
 	return n > 0 && (size_t)n < size;
 }
 
-void ipc_json_escape(char *out, size_t size, const char *in) {
-	size_t o = 0;
-	for (const unsigned char *p = (const unsigned char *)in; *p; p++) {
-		if (o + 7 >= size) {
-			/* Out of room: never stop in the middle of a UTF-8 character. */
-			while (o > 0 && ((unsigned char)out[o - 1] & 0xC0) == 0x80) {
-				o--;
-			}
-			if (o > 0 && ((unsigned char)out[o - 1] & 0x80)) {
-				o--;
-			}
-			break;
-		}
-		if (*p == '"' || *p == '\\') {
-			out[o++] = '\\';
-			out[o++] = *p;
-		} else if (*p < 0x20) {
-			o += snprintf(out + o, size - o, "\\u%04x", *p);
-		} else {
-			out[o++] = *p;
-		}
-	}
-	out[o] = '\0';
-}
-
 /* A client that stops reading is disconnected rather than queued forever. */
 #define IPC_QUEUE_MAX (4 * 1024 * 1024)
 
@@ -157,8 +132,8 @@ static void state_json(struct ts_server *server, char *buf, size_t size) {
 	}
 	char title[512] = "", app[256] = "";
 	if (server->focused_view) {
-		ipc_json_escape(title, sizeof(title), view_title(server->focused_view));
-		ipc_json_escape(app, sizeof(app), view_app_id(server->focused_view));
+		json_escape(title, sizeof(title), view_title(server->focused_view));
+		json_escape(app, sizeof(app), view_app_id(server->focused_view));
 	}
 	snprintf(buf, size,
 		"{\"event\":\"state\",\"workspace\":%d,\"workspaces\":%d,\"occupied\":[%s],"
@@ -241,6 +216,11 @@ static void handle_command(struct ts_ipc_client *client, char *line) {
 		state_json(server, buf, sizeof(buf));
 		client->state_hash = text_hash(buf);
 		client_write(client, buf);
+		return;
+	} else if (strcmp(line, "outputs") == 0) {
+		char *json = outputs_json(server);
+		client_write(client, json ? json : "{\"outputs\":[]}");
+		free(json);
 		return;
 	} else if (strcmp(line, "state") == 0) {
 		char buf[1024];
@@ -429,7 +409,7 @@ int ipc_client_main(int argc, char **argv) {
 	if (argc < 1) {
 		fprintf(stderr, "Usage: tessera msg COMMAND [ARGUMENT]\n"
 			"Commands: workspace N|next|prev, move-to-workspace N, focus ID, exec CMD,\n"
-			"          close, fullscreen, float, lock, reload, logout, state, subscribe,\n"
+			"          close, fullscreen, float, lock, reload, logout, state, outputs, subscribe,\n"
 			"          dpms on|off, night-light on|off|toggle, help\n");
 		return 1;
 	}

@@ -243,6 +243,8 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 	server.socket_name = socket;
+	/* Before the screens appear: setting them up sends events. */
+	ipc_init(&server);
 
 	if (!wlr_backend_start(server.backend)) {
 		wlr_log(WLR_ERROR, "Could not start the backend");
@@ -263,7 +265,6 @@ int main(int argc, char *argv[]) {
 #if TESSERA_XWAYLAND
 	xwayland_init(&server);
 #endif
-	ipc_init(&server);
 	night_light_init(&server);
 	lock_init(&server);
 	idle_init(&server);

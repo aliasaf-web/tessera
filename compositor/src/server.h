@@ -25,6 +25,8 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/box.h>
 #include <xkbcommon/xkbcommon.h>
+#include "config.h"
+#include "json.h"
 
 #if TESSERA_XWAYLAND
 #include <wlr/xwayland.h>
@@ -68,33 +70,13 @@ struct ts_theme {
 	struct ts_color on_accent;
 };
 
-struct ts_config {
-	char theme[16];
-	char accent[16];
-	char kb_layout[64];
-	char kb_variant[64];
-	char kb_options[128];
-	char kb_model[64];
-	bool tap_to_click;
-	bool natural_scroll;
-	double pointer_speed;  /* -1 (slow) to 1 (fast) */
-	bool gestures;         /* three-finger swipes */
-	bool swipe_reversed;
-	bool animations;
-	double scale;          /* 0 = automatic */
-	int gaps;              /* -1 = follow the layout size */
-	char layout_size[16];  /* auto, compact or comfortable */
-	int idle_lock_minutes;
-	int idle_screen_off_minutes;
-	char night_light[16];  /* off, scheduled or always */
-	int night_from;        /* minutes after midnight */
-	int night_to;
-	int night_temperature; /* kelvin */
-	char wallpaper[512];   /* none, mosaic, or a PNG file */
-	char terminal[256];
-	char files[256];
-	char browser[256];
-};
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
+#ifndef MAX
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#endif
+
 
 enum ts_cursor_mode {
 	TS_CURSOR_PASSTHROUGH,
@@ -124,6 +106,9 @@ struct ts_output {
 	struct ts_lock_surface *lock_surface;
 	struct wlr_box lock_buttons[TS_LOCK_BUTTON_COUNT]; /* output coords */
 	bool dpms_off;
+	bool in_layout; /* in use: in ts_server.outputs; otherwise in spare_outputs */
+	bool off;       /* switched off in the settings */
+	bool mirror;    /* showing the same picture as the main screen */
 	struct wlr_scene_buffer *wallpaper;
 	void *wallpaper_surface; /* cairo_surface_t, for the rounded corners */
 	int wallpaper_w, wallpaper_h;
@@ -290,7 +275,12 @@ struct ts_server {
 	struct wlr_scene *scene;
 	struct wlr_scene_output_layout *scene_layout;
 	struct wlr_output_layout *output_layout;
-	struct wl_list outputs;
+	struct wl_list outputs;       /* screens in use (ts_output.link) */
+	struct wl_list spare_outputs; /* switched off or mirroring */
+	struct wlr_output_manager_v1 *output_manager;
+	struct wl_listener output_manager_apply;
+	struct wl_listener output_manager_test;
+	struct wl_listener layout_change;
 
 	/* Scene stacking order, bottom to top. */
 	struct wlr_scene_tree *layer_background;
@@ -329,6 +319,9 @@ struct ts_server {
 	struct wlr_idle_inhibit_manager_v1 *idle_inhibit;
 	struct wl_listener new_inhibitor;
 	struct wlr_relative_pointer_manager_v1 *relative_pointer;
+	struct wlr_pointer_constraints_v1 *pointer_constraints;
+	struct wlr_pointer_constraint_v1 *active_constraint; /* holding the pointer now */
+	struct wl_listener new_constraint;
 	struct wlr_cursor_shape_manager_v1 *cursor_shape;
 	struct wl_listener request_set_shape;
 #if TESSERA_XWAYLAND
@@ -475,6 +468,7 @@ struct ts_output *output_at(struct ts_server *server, double lx, double ly);
 struct ts_output *output_focused(struct ts_server *server);
 void output_set_dpms(struct ts_server *server, bool on);
 void outputs_apply_config(struct ts_server *server);
+char *outputs_json(struct ts_server *server);
 
 /* layer.c */
 void layers_init(struct ts_server *server);
@@ -537,6 +531,7 @@ void input_begin_resize(struct ts_view *view, uint32_t edges);
 void input_view_gone(struct ts_view *view);
 bool view_is_hidden(struct ts_view *view);
 void input_cancel_grab(struct ts_server *server);
+void input_constraint_update(struct ts_server *server);
 
 /* deco.c */
 struct wlr_buffer *deco_render_titlebar(struct ts_server *server, int w, double scale,
@@ -563,7 +558,6 @@ void ipc_init(struct ts_server *server);
 void config_reload(struct ts_server *server);
 void ipc_finish(struct ts_server *server);
 void ipc_broadcast(struct ts_server *server, const char *json_line);
-void ipc_json_escape(char *out, size_t size, const char *in);
 void ipc_send_state(struct ts_server *server);
 int ipc_client_main(int argc, char **argv);
 

@@ -1,0 +1,17 @@
+# A settings file used by the tests of both settings readers (the window
+# manager's, in C, and the shell's, in Python): they must agree.
+theme = "light"
+accent='blue'
+  terminal =  foot --app-id test  
+wallpaper=/home/me/My Pictures/sea.png
+gestures=false
+scale = 1.25
+gaps=12
+night_light_from=21:30
+not a setting
+display.HDMI-A-1.mode=1920x1080@59.94
+display.HDMI-A-1.position=left
+display.HDMI-A-1.scale=1.5
+display.eDP-1.enabled=false
+display.DP-2.position=100,-50
+accent=purple

@@ -58,19 +58,37 @@ def config_path():
     return os.path.join(base, "tessera", "config")
 
 
+def config_value(text):
+    """A value as written in the config file: spaces around it are ignored,
+    and matching quotes around it are removed (the window manager reads it
+    the same way)."""
+    text = text.strip()
+    if len(text) >= 2 and text[0] in "\"'" and text[-1] == text[0]:
+        text = text[1:-1]
+    return text
+
+
+def read_config_file(path, values):
+    """Adds the settings in one file to values; a missing file is skipped.
+    The format is described at the top of /etc/tessera/config."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[config_value(key)] = config_value(value)
+    except OSError:
+        pass
+    return values
+
+
 def read_config():
+    """The settings: /etc/tessera/config, then the user's own file on top."""
     values = {}
     for path in ("/etc/tessera/config", config_path()):
-        try:
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, value = line.split("=", 1)
-                    values[key.strip()] = value.strip()
-        except OSError:
-            pass
+        read_config_file(path, values)
     return values
 
 
@@ -173,8 +191,8 @@ def apply_app_theme(dark, accent="orange"):
     lines = []
     try:
         with open(path, encoding="utf-8") as f:
-            lines = [l for l in f.read().splitlines()
-                     if not l.startswith("gtk-application-prefer-dark-theme")]
+            lines = [line for line in f.read().splitlines()
+                     if not line.startswith("gtk-application-prefer-dark-theme")]
     except OSError:
         pass
     if "[Settings]" not in lines:

@@ -2,6 +2,11 @@
 # Use the Settings app to change these; it stores your choices in
 # ~/.config/tessera/config, which overrides this file.
 # This file is rewritten when Tessera is updated.
+#
+# Format (both files): one setting per line, written name=value. Spaces
+# around the name and the value are ignored, and so are matching quotes
+# around the value ("light" is the same as light). Lines starting with #
+# are notes. A setting that appears twice uses its last value.
 
 # Colours: dark or light. Highlight colour: orange, blue, teal, green,
 # yellow, red, pink, purple, slate, or #rrggbb.
@@ -17,8 +22,18 @@ layout_size=auto
 # gaps=14
 animations=true
 
-# Size of everything: auto, or 1, 1.25, 1.5, 1.75, 2.
+# Size of everything: auto, or 1, 1.25, 1.5, 1.75, 2. A screen's own size
+# (below) comes first.
 scale=auto
+
+# Screens (Settings > Displays), each by the port it is plugged into; the
+# command  tessera msg outputs  lists them. For example:
+#   display.HDMI-A-1.enabled=true         (or false to switch it off)
+#   display.HDMI-A-1.mode=1920x1080@60    (or auto; the @60 is optional)
+#   display.HDMI-A-1.scale=1.25           (or auto)
+#   display.HDMI-A-1.position=right       (left, above, below, mirror, auto, or X,Y)
+# right, left, above and below are next to the built-in screen; mirror shows
+# the same picture.
 
 # Night light: off, scheduled or always.
 night_light=off

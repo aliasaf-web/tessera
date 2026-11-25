@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include <libinput.h>
 #include <linux/input-event-codes.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -9,12 +10,14 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_pointer_gestures_v1.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/util/log.h>
+#include <wlr/util/region.h>
 #include <xkbcommon/xkbcommon.h>
 #include "server.h"
 
@@ -37,6 +40,7 @@ void seat_focus_surface(struct ts_server *server, struct wlr_surface *surface) {
 	struct wlr_seat *seat = server->seat;
 	if (surface == NULL) {
 		wlr_seat_keyboard_notify_clear_focus(seat);
+		input_constraint_update(server);
 		return;
 	}
 	if (server->locked) {
@@ -52,6 +56,7 @@ void seat_focus_surface(struct ts_server *server, struct wlr_surface *surface) {
 	} else {
 		wlr_seat_keyboard_notify_enter(seat, surface, NULL, 0, NULL);
 	}
+	input_constraint_update(server);
 }
 
 static struct xkb_keymap *make_keymap(struct ts_server *server) {
@@ -645,7 +650,7 @@ static void update_drop_hint(struct ts_server *server, struct ts_view *target) {
 	wlr_scene_node_set_enabled(&server->drop_hint->node, true);
 }
 
-static void process_motion(struct ts_server *server, uint32_t time) {
+static void update_pointer_focus(struct ts_server *server, uint32_t time) {
 	double lx = server->cursor->x, ly = server->cursor->y;
 	struct wlr_seat *seat = server->seat;
 	wlr_scene_node_set_position(&server->drag_icons->node, lx, ly);
@@ -755,6 +760,121 @@ static void process_motion(struct ts_server *server, uint32_t time) {
 	}
 }
 
+/* ---------------------------------------------------------------------- */
+/* Pointer locking: games and 3D apps can hold the pointer in place (they   */
+/* still get its movements) or keep it inside their window.                 */
+/* ---------------------------------------------------------------------- */
+
+struct ts_constraint {
+	struct ts_server *server;
+	struct wlr_pointer_constraint_v1 *constraint;
+	struct wl_listener destroy;
+};
+
+/* A held pointer may say where the cursor should be when it is let go. */
+static void warp_to_cursor_hint(struct ts_server *server,
+		struct wlr_pointer_constraint_v1 *constraint) {
+	struct wlr_seat *seat = server->seat;
+	if (constraint->type != WLR_POINTER_CONSTRAINT_V1_LOCKED ||
+			!constraint->current.cursor_hint.enabled ||
+			seat->pointer_state.focused_surface != constraint->surface) {
+		return;
+	}
+	double hx = constraint->current.cursor_hint.x, hy = constraint->current.cursor_hint.y;
+	wlr_cursor_warp(server->cursor, NULL, server->cursor->x - seat->pointer_state.sx + hx,
+		server->cursor->y - seat->pointer_state.sy + hy);
+	wlr_seat_pointer_warp(seat, hx, hy);
+}
+
+/* Only the app that has the keyboard, while the pointer is over it (and in
+ * the area it chose); never on the lock screen or while dragging a window. */
+static struct wlr_pointer_constraint_v1 *wanted_constraint(struct ts_server *server) {
+	struct wlr_seat *seat = server->seat;
+	struct wlr_surface *surface = seat->keyboard_state.focused_surface;
+	if (server->locked || server->cursor_mode != TS_CURSOR_PASSTHROUGH || surface == NULL ||
+			seat->pointer_state.focused_surface != surface) {
+		return NULL;
+	}
+	struct wlr_pointer_constraint_v1 *constraint = wlr_pointer_constraints_v1_constraint_for_surface(
+		server->pointer_constraints, surface, seat);
+	if (constraint == NULL || constraint == server->active_constraint) {
+		return constraint;
+	}
+	if (!pixman_region32_contains_point(&constraint->region, (int)floor(seat->pointer_state.sx),
+			(int)floor(seat->pointer_state.sy), NULL)) {
+		return NULL;
+	}
+	return constraint;
+}
+
+void input_constraint_update(struct ts_server *server) {
+	struct wlr_pointer_constraint_v1 *constraint = wanted_constraint(server);
+	struct wlr_pointer_constraint_v1 *old = server->active_constraint;
+	if (constraint == old) {
+		return;
+	}
+	server->active_constraint = constraint;
+	if (old) {
+		warp_to_cursor_hint(server, old);
+		wlr_pointer_constraint_v1_send_deactivated(old); /* may destroy it */
+	}
+	if (constraint) {
+		wlr_pointer_constraint_v1_send_activated(constraint);
+	}
+}
+
+/* Applies the active lock to a movement. False: the pointer must stay. */
+static bool constrain_motion(struct ts_server *server, double *dx, double *dy) {
+	input_constraint_update(server);
+	struct wlr_pointer_constraint_v1 *constraint = server->active_constraint;
+	struct wlr_seat *seat = server->seat;
+	if (constraint == NULL || seat->pointer_state.focused_surface != constraint->surface) {
+		return true;
+	}
+	if (constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED) {
+		return false;
+	}
+	double sx = seat->pointer_state.sx, sy = seat->pointer_state.sy;
+	double nx, ny;
+	if (!wlr_region_confine(&constraint->region, sx, sy, sx + *dx, sy + *dy, &nx, &ny)) {
+		return false;
+	}
+	*dx = nx - sx;
+	*dy = ny - sy;
+	return true;
+}
+
+static void constraint_destroy(struct wl_listener *listener, void *data) {
+	struct ts_constraint *c = wl_container_of(listener, c, destroy);
+	struct ts_server *server = c->server;
+	if (server->active_constraint == c->constraint) {
+		warp_to_cursor_hint(server, c->constraint);
+		server->active_constraint = NULL;
+	}
+	wl_list_remove(&c->destroy.link);
+	free(c);
+}
+
+static void new_constraint(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, new_constraint);
+	struct wlr_pointer_constraint_v1 *constraint = data;
+	struct ts_constraint *c = calloc(1, sizeof(*c));
+	if (c == NULL) {
+		wlr_log(WLR_ERROR, "Out of memory");
+		return;
+	}
+	c->server = server;
+	c->constraint = constraint;
+	c->destroy.notify = constraint_destroy;
+	wl_signal_add(&constraint->events.destroy, &c->destroy);
+	input_constraint_update(server);
+}
+
+static void process_motion(struct ts_server *server, uint32_t time) {
+	update_pointer_focus(server, time);
+	input_constraint_update(server);
+}
+
 void cursor_rebase(struct ts_server *server) {
 	if (server->cursor_mode == TS_CURSOR_PASSTHROUGH) {
 		process_motion(server, now_msec());
@@ -768,7 +888,11 @@ static void cursor_motion(struct wl_listener *listener, void *data) {
 	wlr_relative_pointer_manager_v1_send_relative_motion(server->relative_pointer,
 		server->seat, (uint64_t)event->time_msec * 1000, event->delta_x, event->delta_y,
 		event->unaccel_dx, event->unaccel_dy);
-	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
+	double dx = event->delta_x, dy = event->delta_y;
+	if (!constrain_motion(server, &dx, &dy)) {
+		return;
+	}
+	wlr_cursor_move(server->cursor, &event->pointer->base, dx, dy);
 	process_motion(server, event->time_msec);
 }
 
@@ -782,7 +906,15 @@ static void cursor_motion_absolute(struct wl_listener *listener, void *data) {
 	double dx = lx - server->cursor->x, dy = ly - server->cursor->y;
 	wlr_relative_pointer_manager_v1_send_relative_motion(server->relative_pointer,
 		server->seat, (uint64_t)event->time_msec * 1000, dx, dy, dx, dy);
-	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
+	if (!constrain_motion(server, &dx, &dy)) {
+		return;
+	}
+	if (server->active_constraint) {
+		wlr_cursor_warp_closest(server->cursor, &event->pointer->base,
+			server->cursor->x + dx, server->cursor->y + dy);
+	} else {
+		wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
+	}
 	process_motion(server, event->time_msec);
 }
 
@@ -1261,6 +1393,9 @@ void input_init(struct ts_server *server) {
 	wl_signal_add(&server->seat->events.start_drag, &server->start_drag);
 
 	server->relative_pointer = wlr_relative_pointer_manager_v1_create(server->display);
+	server->pointer_constraints = wlr_pointer_constraints_v1_create(server->display);
+	server->new_constraint.notify = new_constraint;
+	wl_signal_add(&server->pointer_constraints->events.new_constraint, &server->new_constraint);
 	server->cursor_shape = wlr_cursor_shape_manager_v1_create(server->display, 1);
 	server->request_set_shape.notify = request_set_shape;
 	wl_signal_add(&server->cursor_shape->events.request_set_shape, &server->request_set_shape);

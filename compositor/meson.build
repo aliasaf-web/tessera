@@ -1,7 +1,7 @@
 project(
 	'tessera',
 	'c',
-	version: '1.5.0',
+	version: files('../VERSION'),
 	license: 'MIT',
 	meson_version: '>=0.60.0',
 	default_options: ['c_std=c11', 'warning_level=2', 'werror=false'],
@@ -42,7 +42,9 @@ protocols = [
 	protocols_dir / 'stable/xdg-shell/xdg-shell.xml',
 	protocols_dir / 'staging/cursor-shape/cursor-shape-v1.xml',
 	protocols_dir / 'unstable/tablet/tablet-unstable-v2.xml',
+	protocols_dir / 'unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
 	'protocols/wlr-layer-shell-unstable-v1.xml',
+	'protocols/wlr-output-management-unstable-v1.xml',
 ]
 
 protocol_headers = []
@@ -57,10 +59,12 @@ endforeach
 
 sources = files(
 	'src/config.c',
+	'src/config_file.c',
 	'src/deco.c',
 	'src/idle.c',
 	'src/input.c',
 	'src/ipc.c',
+	'src/json.c',
 	'src/layer.c',
 	'src/layout.c',
 	'src/lock.c',
@@ -85,3 +89,11 @@ executable(
 )
 
 test('idle timing', executable('idle_test', 'tests/idle_test.c', build_by_default: false))
+test('reading settings', executable('config_test', 'tests/config_test.c', 'src/config_file.c',
+	dependencies: math, build_by_default: false),
+	args: [files('../tests/config-sample')])
+test('JSON text', executable('json_test', 'tests/json_test.c', 'src/json.c',
+	build_by_default: false))
+test('tiling', executable('tile_test', 'tests/tile_test.c',
+	dependencies: wlroots.partial_dependency(compile_args: true, includes: true),
+	build_by_default: false))

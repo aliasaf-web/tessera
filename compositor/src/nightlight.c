@@ -100,6 +100,11 @@ static void apply_all(struct ts_server *server) {
 	wl_list_for_each(output, &server->outputs, link) {
 		night_light_apply_output(output);
 	}
+	wl_list_for_each(output, &server->spare_outputs, link) {
+		if (output->mirror) {
+			night_light_apply_output(output);
+		}
+	}
 }
 
 void night_light_update(struct ts_server *server, bool force) {

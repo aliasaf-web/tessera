@@ -11,8 +11,9 @@ manager, bar, app launcher, quick settings, notifications and lock screen.
   Wi-Fi, Bluetooth, sound, brightness, dark mode, night light, battery and power.
 - **Touchpad swipes.** Swipe left or right with three fingers to change workspace,
   up to see your apps.
-- **A simple Settings app** for colours, background, screen size, night light,
-  touchpad, keyboard, sound, screen lock and default apps.
+- **A simple Settings app** for colours, background, screens (size,
+  resolution, a second screen or projector), night light, touchpad, keyboard,
+  sound, screen lock and default apps.
 - **Light on your laptop.** Small screens get a compact layout automatically,
   and it only needs a small amount of memory.
 
@@ -91,23 +92,58 @@ laptop brings back the lock screen.
 
 ## Everyday use
 
-| To do this | Press |
+To open an app, tap **Super** (the key with the Windows logo), type its name
+and press **Enter**. New windows open in the big space on the left; the others
+line up on the right. Drag a window's title bar onto another window to swap
+them, and drag the gap between the columns to make one side wider.
+
+<!-- Shortcuts: made from shell/tessera_shell/shortcuts.py by tools/update-readme.py -->
+
+**Getting around**
+
+| Keys | What it does |
 |---|---|
-| Open an app | Tap **Super**, type its name, press **Enter** |
-| Open a terminal / files / web browser | **Super + Enter** / **Super + E** / **Super + B** |
-| Close a window | **Super + Q**, or click the **×** on its title bar |
-| Switch to another window | Hold **Alt**, tap **Tab** until it's highlighted, let go |
-| Move between windows | **Super + arrow keys**, or click a window |
-| Swap windows around | **Super + Shift + arrow keys**, or drag a title bar onto another window |
-| Make one window big / full screen | **Super + M** / **Super + F** |
-| Let a window float freely | **Super + Space** (then drag it with **Super + left mouse**) |
-| Make the left column wider | Drag the gap between the columns |
-| Change workspace (separate desktops) | Swipe left/right with **3 fingers**, **Super + Ctrl + ← / →**, or **Super + 1 … 9** |
-| Move a window to another workspace | **Super + Shift + 1 … 9** |
-| See your apps / hide them | Swipe up / down with **3 fingers** |
-| Screenshot (whole screen / an area) | **Print Screen** / **Shift + Print Screen** |
-| Lock the screen | **Super + L** |
-| Show all shortcuts | **Super + /** |
+| **Super** or **Super + A** | Open the app launcher (tap Super on its own) |
+| **Super + Enter** | Open a terminal |
+| **Super + E** | Open your files |
+| **Super + B** | Open the web browser |
+| **Super + L** | Lock the screen |
+| **Super + Esc** or **Super + Shift + E** | Sleep, restart or shut down |
+
+**Windows**
+
+| Keys | What it does |
+|---|---|
+| **Alt + Tab** or **Super + Tab** | Switch windows: hold Alt or Super, tap Tab to choose, let go (add Shift to go back) |
+| **Super + Q** or **Super + W** or **Alt + F4** | Close the window |
+| **Super + ← → ↑ ↓** | Move between windows |
+| **Super + Shift + ← → ↑ ↓** | Swap windows around |
+| **Super + F** | Full screen on/off |
+| **Super + M** or **double-click the title bar** | Make a window big on/off |
+| **Super + Space** | Let a window float freely on/off |
+| **Super + left mouse drag** | Move a floating window, or swap a window with another |
+| **Super + right mouse drag** | Resize a floating window |
+
+**Workspaces**
+
+| Keys | What it does |
+|---|---|
+| **3 fingers ← →** | Swipe on the touchpad to change workspace |
+| **3 fingers ↑ ↓** | Swipe up to show your apps, down to hide them |
+| **Super + Ctrl + ← →** | Previous or next workspace |
+| **Super + 1 … 9** | Go to workspace 1 to 9 |
+| **Super + Shift + 1 … 9** | Move the window to that workspace |
+
+**More**
+
+| Keys | What it does |
+|---|---|
+| **Print Screen** | Take a screenshot of the whole screen |
+| **Shift + Print Screen** or **Super + Shift + S** | Take a screenshot of an area |
+| **Super + Shift + R** | Apply changes made by hand to the settings file |
+| **Super + /** | Show this help again |
+
+<!-- End of shortcuts -->
 
 Wi-Fi, Bluetooth, volume, brightness, dark mode, night light, **Sleep**,
 **Restart** and **Shut down** are all in quick settings (click the clock).
@@ -137,7 +173,7 @@ Click the clock, then the **gear** button at the top of quick settings. (Or tap
 | Page | What you can change |
 |---|---|
 | Appearance | Dark or light, highlight colour, background (plain, mosaic or your own picture), compact or comfortable layout, animations |
-| Display | Size of everything (scale), night light and its times and warmth |
+| Displays | For each screen: on or off, resolution, size of everything (scale), and where a second screen sits (left, right, above, below, or showing the same picture). Changes come back after 15 seconds unless you press **Keep**, in case a screen can't show them. Also night light and its times and warmth |
 | Touchpad & mouse | Tap to click, natural scrolling, pointer speed, three-finger swipes |
 | Keyboard | Keyboard layout, list of shortcuts |
 | Sound | Which speakers and microphone to use |
@@ -146,8 +182,13 @@ Click the clock, then the **gear** button at the top of quick settings. (Or tap
 | About | Your computer's details and **Update Tessera** |
 
 Your choices are saved in `~/.config/tessera/config`. You can also edit that file
-by hand (any line from `/etc/tessera/config` can go in it); press
-**Super + Shift + R** afterwards to apply it.
+by hand (any line from `/etc/tessera/config` can go in it, and the format is
+explained at its top); press **Super + Shift + R** afterwards to apply it.
+
+Screen tools made for wlroots desktops, such as `wlr-randr` and `kanshi`, work
+too; their changes last until the settings are applied again. Games and 3D
+apps can hold the mouse pointer in place or keep it inside their window while
+they have the keyboard.
 
 ## Updating
 
@@ -201,3 +242,19 @@ come with Tessera are "recommended", so you can remove any of them with
 
 The control command `tessera msg` can switch workspaces, lock the screen and more;
 run it without arguments to see the list.
+
+### Checks
+
+Every change on GitHub is built on Debian 13 with warnings treated as errors,
+and tested (see `.github/workflows/checks.yml`). To run the same checks on your
+computer, from the `tessera` folder:
+
+```sh
+meson setup build compositor && meson test -C build   # window manager
+python3 -m unittest discover -s tests                 # shell
+flake8 shell tools tests                              # Python style
+```
+
+The keyboard shortcuts are listed once, in `shell/tessera_shell/shortcuts.py`.
+After changing them, run `python3 tools/update-readme.py` to update the tables
+above. The version number is in the `VERSION` file.

@@ -81,7 +81,8 @@ class Switcher:
             else:
                 image.set_from_icon_name("application-x-executable")
             image.set_pixel_size(48)
-            name = (app.get_display_name() if app else "") or win.get("app_id") or win.get("title") or "Window"
+            name = ((app.get_display_name() if app else "") or win.get("app_id")
+                    or win.get("title") or "Window")
             text = Gtk.Label(label=name)
             text.set_ellipsize(Pango.EllipsizeMode.END)
             text.set_max_width_chars(12)

@@ -1,0 +1,137 @@
+"""Tests for the shell's parts that don't need a screen.
+
+    python3 -m unittest discover -s tests
+"""
+
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "shell"))
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Pango", "1.0")
+
+from tessera_shell import terminal, theme  # noqa: E402
+
+
+class ConfigFile(unittest.TestCase):
+    """The shell must read tests/config-sample exactly as the window manager
+    does (compositor/tests/config_test.c checks the same file)."""
+
+    def setUp(self):
+        self.values = theme.read_config_file(ROOT / "tests" / "config-sample", {})
+
+    def test_values(self):
+        v = self.values
+        self.assertEqual(v["theme"], "light")
+        self.assertEqual(v["accent"], "purple")
+        self.assertEqual(v["terminal"], "foot --app-id test")
+        self.assertEqual(v["wallpaper"], "/home/me/My Pictures/sea.png")
+        self.assertEqual(v["gestures"], "false")
+        self.assertEqual(v["scale"], "1.25")
+        self.assertEqual(v["display.HDMI-A-1.mode"], "1920x1080@59.94")
+        self.assertEqual(v["display.HDMI-A-1.position"], "left")
+        self.assertEqual(v["display.eDP-1.enabled"], "false")
+        self.assertNotIn("not a setting", v)
+
+    def test_missing_file(self):
+        self.assertEqual(theme.read_config_file("/nonexistent/tessera/config", {}), {})
+
+    def test_write_keeps_the_rest(self):
+        with tempfile.TemporaryDirectory() as home:
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": home}):
+                path = pathlib.Path(theme.config_path())
+                path.parent.mkdir(parents=True)
+                path.write_text("# my notes\ntheme=dark\naccent = blue\n", encoding="utf-8")
+                theme.write_config_value("accent", "green")
+                theme.write_config_value("display.HDMI-A-1.position", "mirror")
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("# my notes\n", text)
+                self.assertIn("theme=dark\n", text)
+                values = theme.read_config_file(path, {})
+                self.assertEqual(values["accent"], "green")
+                self.assertEqual(values["display.HDMI-A-1.position"], "mirror")
+                self.assertEqual(text.count("accent"), 1)
+
+
+class Accents(unittest.TestCase):
+    """The accent colours are listed in the window manager and in the shell;
+    they must be the same."""
+
+    def test_same_in_both(self):
+        source = (ROOT / "compositor" / "src" / "config.c").read_text(encoding="utf-8")
+        table = source[source.index("} accents[] = {"):]
+        table = table[:table.index("};")]
+        in_c = {name: (dark, light) for name, dark, light in
+                re.findall(r'\{\s*"(\w+)",\s*"(#[0-9a-fA-F]+)",\s*"(#[0-9a-fA-F]+)"\s*\}', table)}
+        self.assertTrue(in_c, "could not find the accents table in config.c")
+        self.assertEqual(in_c, theme.ACCENTS)
+
+
+class Terminal(unittest.TestCase):
+    def which(self, *installed):
+        return mock.patch("shutil.which", lambda name: name if name in installed else None)
+
+    def test_flags(self):
+        run = ["sh", "-c", "tessera-update"]
+        with self.which("foot", "gnome-terminal", "xfce4-terminal", "konsole", "xterm"):
+            self.assertEqual(terminal.terminal_command("foot", run), ["foot"] + run)
+            self.assertEqual(terminal.terminal_command("gnome-terminal", run),
+                             ["gnome-terminal", "--"] + run)
+            self.assertEqual(terminal.terminal_command("xfce4-terminal", run),
+                             ["xfce4-terminal", "-x"] + run)
+            self.assertEqual(terminal.terminal_command("konsole", run), ["konsole", "-e"] + run)
+            self.assertEqual(terminal.terminal_command("xterm -fa Mono", run),
+                             ["xterm", "-fa", "Mono", "-e"] + run)
+
+    def test_fallbacks(self):
+        run = ["true"]
+        with self.which("xdg-terminal-exec"):
+            self.assertEqual(terminal.terminal_command("missing-terminal", run),
+                             ["xdg-terminal-exec", "true"])
+        with self.which():
+            self.assertEqual(terminal.terminal_command("", run),
+                             ["x-terminal-emulator", "-e", "true"])
+
+
+class Notifications(unittest.TestCase):
+    def setUp(self):
+        try:
+            gi.require_version("Gtk4LayerShell", "1.0")
+            from tessera_shell import notifications
+        except (ImportError, ValueError) as error:
+            self.skipTest(f"needs the shell's libraries: {error}")
+        self.safe_markup = notifications.safe_markup
+
+    def test_keeps_simple_formatting(self):
+        self.assertEqual(self.safe_markup("<b>Hi</b> & bye"), "<b>Hi</b> &amp; bye")
+
+    def test_removes_links_and_images(self):
+        self.assertEqual(self.safe_markup('<a href="x">link</a><img src="y"/>'), "link")
+
+    def test_escapes_everything_else(self):
+        self.assertEqual(self.safe_markup("<script>x</script>"), "&lt;script&gt;x&lt;/script&gt;")
+
+    def test_broken_markup(self):
+        self.assertEqual(self.safe_markup("<b>open"), "open")
+
+
+class Readme(unittest.TestCase):
+    def test_shortcuts_up_to_date(self):
+        result = subprocess.run([sys.executable, str(ROOT / "tools" / "update-readme.py"),
+                                 "--check"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

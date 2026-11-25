@@ -4,9 +4,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include "server.h"
-
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#include "tile_math.h"
 
 bool view_visible(struct ts_view *view) {
 	return view->mapped && view->output && view->workspace == view->output->workspace;
@@ -37,18 +35,12 @@ static int count_tiled(struct ts_output *output) {
 	return n;
 }
 
-static int master_width(struct ts_output *output, struct wlr_box area) {
-	int g = output_gaps(output);
-	return (int)((area.width - g) * output->master_ratio[output->workspace]);
-}
-
 void arrange_output(struct ts_output *output) {
 	struct ts_server *server = output->server;
 	int g = output_gaps(output);
+	double ratio = output->master_ratio[output->workspace];
 	struct wlr_box area = tile_area(output);
 	int n = count_tiled(output);
-	int mw = master_width(output, area);
-	int stack_n = n - 1;
 	int i = 0;
 
 	struct ts_view *view;
@@ -89,22 +81,7 @@ void arrange_output(struct ts_output *output) {
 			continue;
 		}
 
-		struct wlr_box box;
-		if (n == 1) {
-			box = area;
-		} else if (i == 0) {
-			box = (struct wlr_box){ area.x, area.y, mw, area.height };
-		} else {
-			int sx = area.x + mw + g;
-			int sw = area.width - mw - g;
-			int total = area.height - (stack_n - 1) * g;
-			int idx = i - 1;
-			int y0 = area.y + idx * (total / stack_n + g);
-			int h = (idx == stack_n - 1) ? area.y + area.height - y0 : total / stack_n;
-			box = (struct wlr_box){ sx, y0, sw, h };
-		}
-		i++;
-		view_set_box(view, box);
+		view_set_box(view, tile_slot(area, g, ratio, n, i++));
 	}
 }
 
@@ -320,7 +297,8 @@ bool layout_gap_hit(struct ts_output *output, double lx, double ly) {
 	}
 	int g = output_gaps(output);
 	struct wlr_box area = tile_area(output);
-	int left = area.x + master_width(output, area);
+	struct wlr_box first = tile_slot(area, g, output->master_ratio[output->workspace], 2, 0);
+	int left = first.x + first.width;
 	int pad = g < 8 ? 4 : 0;
 	return lx >= left - pad && lx <= left + g + pad &&
 		ly >= area.y && ly <= area.y + area.height;
