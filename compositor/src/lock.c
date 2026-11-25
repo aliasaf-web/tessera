@@ -142,6 +142,7 @@ void lock_engage(struct ts_server *server) {
 	lock_arrange(server);
 	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 	server->cursor_image = "default";
+	idle_update_inhibit(server); /* windows behind the lock screen can't be seen */
 	ipc_send_state(server);
 }
 
@@ -172,6 +173,7 @@ static void lock_release(struct ts_server *server) {
 	}
 	server->cursor_image = NULL;
 	cursor_rebase(server);
+	idle_update_inhibit(server);
 	idle_reset(server);
 	ipc_send_state(server);
 }

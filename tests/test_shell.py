@@ -77,6 +77,17 @@ class Accents(unittest.TestCase):
         self.assertTrue(in_c, "could not find the accents table in config.c")
         self.assertEqual(in_c, theme.ACCENTS)
 
+    def test_colour_codes(self):
+        orange_dark, orange_light = theme.ACCENTS["orange"]
+        self.assertEqual(theme.accent_hex("blue", True), theme.ACCENTS["blue"][0])
+        self.assertEqual(theme.accent_hex("#12aBcD", True), "#12aBcD")
+        self.assertEqual(theme.accent_hex("#12abcdef", False), "#12abcd")
+        for wrong in ("#zzzzzz", "#12345z", "#1234", "12abcd", "#12abcd ", "", "#12abcde"):
+            self.assertEqual(theme.accent_hex(wrong, True), orange_dark, wrong)
+            self.assertEqual(theme.accent_hex(wrong, False), orange_light, wrong)
+        # Text on the accent is worked out from any colour accepted here.
+        self.assertIn(theme.on_accent(theme.accent_hex("#ffffff", True)), ("#111111", "#ffffff"))
+
 
 class Terminal(unittest.TestCase):
     def which(self, *installed):

@@ -210,6 +210,8 @@ static void new_layer_surface(struct wl_listener *listener, void *data) {
 		layer_tree(server, ls->pending.layer), ls);
 	layer->scene->tree->node.data = &layer->node;
 	layer->popup_tree = wlr_scene_tree_create(server->layer_popups);
+	/* Marks its menus and tooltips as the panel's, so they are kept on screen. */
+	layer->popup_tree->node.data = &layer->node;
 	ls->data = layer;
 
 	layer->map.notify = layer_map;

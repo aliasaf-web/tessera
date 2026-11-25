@@ -190,6 +190,7 @@ struct ts_view {
 struct ts_popup {
 	struct wlr_xdg_popup *xdg_popup;
 	struct wl_listener commit;
+	struct wl_listener reposition;
 	struct wl_listener destroy;
 };
 
@@ -242,6 +243,14 @@ struct ts_lock_surface {
 	struct wlr_scene_rect *backdrop;     /* plain colour under everything */
 	struct wlr_scene_buffer *wallpaper;  /* dimmed wallpaper, if there is one */
 	struct wlr_scene_buffer *parts[TS_LOCK_PART_COUNT];
+};
+
+/* Fingers followed at once on a touch screen. */
+#define TS_TOUCH_POINTS 10
+
+struct ts_touch_point {
+	int32_t id;
+	double ox, oy; /* layout position of the surface it touches */
 };
 
 /* Longest request line, including its newline. */
@@ -305,8 +314,9 @@ struct ts_server {
 	struct wl_listener new_decoration;
 	struct wlr_xdg_activation_v1 *xdg_activation;
 	struct wl_listener request_activate;
-	/* Protocols that can read the screen or the clipboard, fake input, or
-	 * draw desktop panels. Sandboxed apps (such as Flatpaks) don't get them. */
+	/* Protocols that can read the screen or the clipboard, fake input, draw
+	 * desktop panels or change the screens (output_manager, above). Sandboxed
+	 * apps (such as Flatpaks) don't get them. */
 	struct wlr_security_context_manager_v1 *security_context;
 	struct wlr_screencopy_manager_v1 *screencopy;
 	struct wlr_export_dmabuf_manager_v1 *export_dmabuf;
@@ -334,6 +344,9 @@ struct ts_server {
 	struct wl_list focus_stack;
 	struct ts_view *focused_view;
 	struct ts_layer_surface *focused_layer;
+	/* The screen in use: where the focused window is, or the screen picked
+	 * last (by changing its workspace or clicking its desktop). */
+	struct ts_output *active_output;
 
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *cursor_mgr;
@@ -343,6 +356,23 @@ struct ts_server {
 	struct wl_listener cursor_axis;
 	struct wl_listener cursor_frame;
 	const char *cursor_image;
+
+	/* Touch screens: fingers on apps that take touch, with where each app's
+	 * surface starts; a finger anywhere else acts as the mouse. */
+	struct wl_listener touch_down;
+	struct wl_listener touch_up;
+	struct wl_listener touch_motion;
+	struct wl_listener touch_cancel;
+	struct wl_listener touch_frame;
+	struct ts_touch_point touch_points[TS_TOUCH_POINTS];
+	int touch_count;
+	bool touch_as_mouse;
+	int32_t touch_mouse_id; /* the finger acting as the mouse */
+	/* Drawing tablets: the pen moves the pointer and clicks. */
+	struct wl_listener tablet_axis;
+	struct wl_listener tablet_proximity;
+	struct wl_listener tablet_tip;
+	struct wl_listener tablet_button;
 
 	struct wlr_seat *seat;
 	struct wl_listener new_input;
@@ -465,6 +495,8 @@ int output_gaps(struct ts_output *output);
 /* output.c */
 void output_init(struct ts_server *server);
 struct ts_output *output_at(struct ts_server *server, double lx, double ly);
+struct ts_output *output_by_name(struct ts_server *server, const char *name);
+struct ts_output *output_builtin(struct ts_server *server);
 struct ts_output *output_focused(struct ts_server *server);
 void output_set_dpms(struct ts_server *server, bool on);
 void outputs_apply_config(struct ts_server *server);
@@ -500,6 +532,7 @@ void view_fit_floating(struct ts_view *view);
 void views_redraw_frames(struct ts_server *server);
 struct ts_view *view_by_id(struct ts_server *server, uint32_t id);
 void view_focus_id(struct ts_server *server, uint32_t id);
+void focus_output(struct ts_server *server, struct ts_output *output);
 void focus_top_view(struct ts_server *server);
 #if TESSERA_XWAYLAND
 void xwayland_init(struct ts_server *server);
@@ -511,6 +544,7 @@ void arrange_all(struct ts_server *server);
 void workspace_switch(struct ts_server *server, int workspace);
 void workspace_switch_output(struct ts_output *output, int workspace);
 void workspace_step(struct ts_server *server, int direction);
+void workspace_step_output(struct ts_output *output, int direction);
 void layout_init(struct ts_server *server);
 void layout_output_destroyed(struct ts_output *output);
 bool view_visible(struct ts_view *view);
@@ -532,6 +566,7 @@ void input_view_gone(struct ts_view *view);
 bool view_is_hidden(struct ts_view *view);
 void input_cancel_grab(struct ts_server *server);
 void input_constraint_update(struct ts_server *server);
+void input_map_devices(struct ts_server *server);
 
 /* deco.c */
 struct wlr_buffer *deco_render_titlebar(struct ts_server *server, int w, double scale,

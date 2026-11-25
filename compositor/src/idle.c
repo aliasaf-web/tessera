@@ -8,8 +8,22 @@
 /* Idle handling: after a while without input the screen locks, a bit
  * later it turns off. Video players and the like can prevent this. */
 
+/* A window (a video player, say) may keep the screen on, but only while it
+ * can be seen: not from a hidden workspace, from under another window, or
+ * from behind the lock screen. `leaving` is an inhibitor about to go. */
+static bool inhibited_except(struct ts_server *server, struct wlr_idle_inhibitor_v1 *leaving) {
+	struct wlr_idle_inhibitor_v1 *inhibitor;
+	wl_list_for_each(inhibitor, &server->idle_inhibit->inhibitors, link) {
+		/* A surface is on a screen only where part of it is visible. */
+		if (inhibitor != leaving && !wl_list_empty(&inhibitor->surface->current_outputs)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool idle_inhibited(struct ts_server *server) {
-	return !wl_list_empty(&server->idle_inhibit->inhibitors);
+	return inhibited_except(server, NULL);
 }
 
 /* Waits until the next step of the plan, counted from the last input. */
@@ -25,6 +39,7 @@ static void schedule_next(struct ts_server *server) {
 static int idle_fire(void *data) {
 	struct ts_server *server = data;
 	struct ts_config *c = &server->config;
+	idle_update_inhibit(server);
 	if (idle_inhibited(server)) {
 		wl_event_source_timer_update(server->idle_timer, 60 * 1000);
 		return 0;
@@ -54,23 +69,28 @@ void idle_reset(struct ts_server *server) {
 	schedule_next(server);
 }
 
+/* Tells other programs that watch for idleness (ext-idle-notify); called
+ * when windows are shown or hidden. */
 void idle_update_inhibit(struct ts_server *server) {
-	wlr_idle_notifier_v1_set_inhibited(server->idle_notifier, idle_inhibited(server));
+	if (server->idle_inhibit != NULL) {
+		wlr_idle_notifier_v1_set_inhibited(server->idle_notifier, idle_inhibited(server));
+	}
 }
 
 struct inhibitor {
 	struct ts_server *server;
+	struct wlr_idle_inhibitor_v1 *wlr_inhibitor;
 	struct wl_listener destroy;
 };
 
 static void inhibitor_destroy(struct wl_listener *listener, void *data) {
 	struct inhibitor *inh = wl_container_of(listener, inh, destroy);
 	struct ts_server *server = inh->server;
+	/* It is still in the list during this signal. */
+	bool inhibited = inhibited_except(server, inh->wlr_inhibitor);
 	wl_list_remove(&inh->destroy.link);
 	free(inh);
-	/* The inhibitor is removed from the list after this signal. */
-	wlr_idle_notifier_v1_set_inhibited(server->idle_notifier,
-		wl_list_length(&server->idle_inhibit->inhibitors) > 1);
+	wlr_idle_notifier_v1_set_inhibited(server->idle_notifier, inhibited);
 	idle_reset(server);
 }
 
@@ -83,6 +103,7 @@ static void new_inhibitor(struct wl_listener *listener, void *data) {
 		return;
 	}
 	inh->server = server;
+	inh->wlr_inhibitor = wlr_inh;
 	inh->destroy.notify = inhibitor_destroy;
 	wl_signal_add(&wlr_inh->events.destroy, &inh->destroy);
 	idle_update_inhibit(server);

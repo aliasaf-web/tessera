@@ -26,7 +26,8 @@ class Bar:
             center.add_css_class("compact")
 
         apps = button(icon("view-app-grid-symbolic", 18), css="round",
-                      tooltip="All apps  (Super)", on_click=shell.toggle_launcher)
+                      tooltip="All apps  (Super)",
+                      on_click=lambda: shell.toggle_launcher(self.monitor))
         self.ws_box = hbox(0)
         self._ws_key = None  # what the dots last showed
         self.ws_box.add_css_class("pill")
@@ -91,7 +92,7 @@ class Bar:
             return True
         self._scroll_total += dy if abs(dy) >= abs(dx) else dx
         if abs(self._scroll_total) >= 1.0:
-            ipc.send("workspace", "next" if self._scroll_total > 0 else "prev")
+            self._send_workspace("next" if self._scroll_total > 0 else "prev")
             self._scroll_total = 0.0
             self._scroll_ready = False
             GLib.timeout_add(250, self._scroll_cooldown)
@@ -134,10 +135,28 @@ class Bar:
         else:
             self.status.remove_css_class("open")
 
+    def _send_workspace(self, which):
+        """Changes the workspace of this bar's own screen."""
+        screen = self.monitor.get_connector()
+        if screen:
+            ipc.send("workspace", which, screen)
+        else:
+            ipc.send("workspace", which)
+
+    def _own_screen(self, state):
+        """This screen's part of the state; the screen in use's if this one
+        isn't listed."""
+        screen = self.monitor.get_connector()
+        for own in state.get("outputs", []):
+            if own.get("name") == screen:
+                return own
+        return state
+
     def update_workspaces(self, state):
-        current = state.get("workspace", 1)
-        occupied = set(state.get("occupied", []))
-        urgent = set(state.get("urgent", []))
+        own = self._own_screen(state)
+        current = own.get("workspace", 1)
+        occupied = set(own.get("occupied", []))
+        urgent = set(own.get("urgent", []))
         # Most state messages (a window title changed, and so on) leave the
         # dots as they are.
         key = (current, frozenset(occupied), frozenset(urgent))
@@ -166,5 +185,5 @@ class Bar:
             hit.set_child(dot)
             hit.set_tooltip_text(tooltip)
             hit.set_focus_on_click(False)
-            hit.connect("clicked", lambda _b, n=i: ipc.send("workspace", n))
+            hit.connect("clicked", lambda _b, n=i: self._send_workspace(n))
             self.ws_box.append(hit)

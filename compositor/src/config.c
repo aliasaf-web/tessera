@@ -23,15 +23,17 @@ void config_load(struct ts_server *server) {
 	config_limit(c);
 }
 
+/* #RRGGBB or #RRGGBBAA; anything else (such as a mistyped code) gets the
+ * fallback. The shell accepts the same (theme.py). */
 static struct ts_color hex(const char *s, struct ts_color fallback) {
-	if (s == NULL || s[0] != '#' || (strlen(s) != 7 && strlen(s) != 9)) {
+	size_t len = s ? strlen(s) : 0;
+	if ((len != 7 && len != 9) || s[0] != '#' ||
+			strspn(s + 1, "0123456789abcdefABCDEF") != len - 1) {
 		return fallback;
 	}
 	unsigned r, g, b, a = 255;
-	if (sscanf(s + 1, "%02x%02x%02x", &r, &g, &b) != 3) {
-		return fallback;
-	}
-	if (strlen(s) == 9) {
+	sscanf(s + 1, "%02x%02x%02x", &r, &g, &b);
+	if (len == 9) {
 		sscanf(s + 7, "%02x", &a);
 	}
 	return (struct ts_color){ r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f };

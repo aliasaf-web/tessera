@@ -83,6 +83,8 @@ void arrange_output(struct ts_output *output) {
 
 		view_set_box(view, tile_slot(area, g, ratio, n, i++));
 	}
+	/* Which windows can be seen may have changed. */
+	idle_update_inhibit(server);
 }
 
 void arrange_all(struct ts_server *server) {
@@ -180,23 +182,24 @@ void workspace_switch_output(struct ts_output *output, int workspace) {
 		wl_event_source_timer_update(server->ws_anim.timer, 16);
 	}
 
-	server->focused_view = NULL;
-	focus_top_view(server);
+	/* The keyboard stays on this screen, even if its new workspace is empty
+	 * (this also sends the new state). */
+	focus_output(server, output);
 	cursor_rebase(server);
-	ipc_send_state(server);
 }
 
+/* On the screen in use. */
 void workspace_switch(struct ts_server *server, int workspace) {
 	workspace_switch_output(output_focused(server), workspace);
 }
 
 /* Next or previous workspace, going at most one empty workspace past the
  * last one in use. */
-void workspace_step(struct ts_server *server, int direction) {
-	struct ts_output *output = output_focused(server);
+void workspace_step_output(struct ts_output *output, int direction) {
 	if (output == NULL) {
 		return;
 	}
+	struct ts_server *server = output->server;
 	int current = output->workspace;
 	int last_used = 0;
 	struct ts_view *view;
@@ -211,6 +214,11 @@ void workspace_step(struct ts_server *server, int direction) {
 	if (target >= 1 && target <= limit) {
 		workspace_switch_output(output, target);
 	}
+}
+
+/* On the screen in use. */
+void workspace_step(struct ts_server *server, int direction) {
+	workspace_step_output(output_focused(server), direction);
 }
 
 void layout_output_destroyed(struct ts_output *output) {

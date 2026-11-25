@@ -131,10 +131,12 @@ class Shell:
 
     # ---------------------------------------------------------------- toggles
 
-    def toggle_launcher(self):
+    def toggle_launcher(self, monitor=None):
+        """Opens the launcher on `monitor` (the screen of the bar button that was
+        clicked), or on the screen in use."""
         if self.quick_settings.visible:
             self.quick_settings.hide()
-        self.launcher.toggle(self.current_monitor())
+        self.launcher.toggle(monitor if monitor is not None else self.current_monitor())
 
     def toggle_quick_settings(self, monitor=None, page=None):
         if self.launcher.visible:

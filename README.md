@@ -158,6 +158,19 @@ Click a dot, or scroll over them, to move between workspaces. A dot in your
 highlight colour means a window there needs you (for example, it opened a
 question while you were somewhere else).
 
+With a second screen, each screen has its own workspaces, and the dots on each
+screen's bar are for that screen. **Super + 1 … 9** and new windows go to the
+screen you are using: the one with the active window, or the one whose
+workspace dots or desktop you clicked last.
+
+Touch screens work too: apps that understand touch get your fingers, and
+anywhere else (title bars, the desktop, the lock screen) a tap is a click. A
+drawing tablet's pen moves the pointer and clicks; pen pressure isn't used yet.
+
+A video playing in a window you can see keeps the screen on. Once the window
+is hidden (on another workspace, or behind another window) the screen locks
+and turns off as usual.
+
 The lock screen has **Sleep**, **Restart** and **Shut down** buttons at the
 bottom (Restart and Shut down ask you to click twice, because open apps close).
 The power button puts the laptop to sleep from there. If Caps Lock is on, the
@@ -186,7 +199,8 @@ by hand (any line from `/etc/tessera/config` can go in it, and the format is
 explained at its top); press **Super + Shift + R** afterwards to apply it.
 
 Screen tools made for wlroots desktops, such as `wlr-randr` and `kanshi`, work
-too; their changes last until the settings are applied again. Games and 3D
+too; their changes last until the settings are applied again. Apps in a
+sandbox (such as Flatpaks) can't change the screens. Games and 3D
 apps can hold the mouse pointer in place or keep it inside their window while
 they have the keyboard.
 
@@ -226,7 +240,7 @@ you turned off, such as Bluetooth) stay that way.
 
 | Part | What it does | Made with |
 |---|---|---|
-| `compositor/` | Window manager: draws windows, tiling, title bars, rounded corners, workspaces and their animation, window switcher, keyboard, touchpad and gestures, night light, background, lock screen, screen locking before sleep | C with wlroots 0.18 (Debian's version) |
+| `compositor/` | Window manager: draws windows, tiling, title bars, rounded corners, workspaces and their animation, window switcher, keyboard, touchpad and gestures, touch screens and drawing tablets, night light, background, lock screen, screen locking before sleep | C with wlroots 0.18 (Debian's version) |
 | `shell/` | Bar, app launcher, quick settings, notifications, volume/brightness pop-up, window switcher, welcome screen, Settings app | Python with GTK 4, gtk4-layer-shell and libadwaita |
 | `data/` | Session start-up scripts, update command, default settings, password check (PAM), login screen and screen-sharing setup, package lists | Shell scripts and config files |
 

@@ -31,10 +31,11 @@ static void switcher_send(struct ts_server *server) {
 		char title[TITLE_LEN], app[APP_ID_LEN];
 		json_escape(title, sizeof(title), view ? view_title(view) : "");
 		json_escape(app, sizeof(app), view ? view_app_id(view) : "");
+		/* hidden: on a workspace no screen is showing. */
 		o += snprintf(buf + o, size - o,
-			"%s{\"id\":%u,\"title\":\"%s\",\"app_id\":\"%s\",\"workspace\":%d}",
+			"%s{\"id\":%u,\"title\":\"%s\",\"app_id\":\"%s\",\"workspace\":%d,\"hidden\":%s}",
 			first ? "" : ",", server->switcher_ids[i], title, app,
-			view ? view->workspace : 0);
+			view ? view->workspace : 0, view && view_is_hidden(view) ? "true" : "false");
 		first = false;
 	}
 	if (o < size) {

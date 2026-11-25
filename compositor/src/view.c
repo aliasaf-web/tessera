@@ -361,6 +361,9 @@ void view_focus(struct ts_view *view) {
 	}
 	struct ts_view *prev = server->focused_view;
 	server->focused_view = view;
+	if (view->output) {
+		server->active_output = view->output;
+	}
 	if (prev && prev != view && prev->mapped) {
 		view_set_activated(prev, false);
 		view_update_frame(prev);
@@ -404,19 +407,33 @@ void view_focus_id(struct ts_server *server, uint32_t id) {
 	view_focus(view);
 }
 
-void focus_top_view(struct ts_server *server) {
+/* Makes this the screen in use: the window used last on it gets the
+ * keyboard, or nothing does if no window is shown there. Windows on other
+ * screens never take over. */
+void focus_output(struct ts_server *server, struct ts_output *output) {
+	server->active_output = output;
 	struct ts_view *view;
 	wl_list_for_each(view, &server->focus_stack, focus_link) {
-		if (view->mapped && view_visible(view)) {
+		if (view->output == output && view_visible(view)) {
 			view_focus(view);
 			return;
 		}
 	}
+	struct ts_view *prev = server->focused_view;
 	server->focused_view = NULL;
+	if (prev && prev->mapped) {
+		view_set_activated(prev, false);
+		view_update_frame(prev);
+	}
 	if (layer_wants_exclusive_focus(server) == NULL && !server->locked) {
 		seat_focus_surface(server, NULL);
 	}
 	ipc_send_state(server);
+}
+
+/* The focused window went away or was hidden: the next one on the same screen. */
+void focus_top_view(struct ts_server *server) {
+	focus_output(server, output_focused(server));
 }
 
 /* ---------------------------------------------------------------------- */
@@ -949,49 +966,70 @@ static struct wlr_scene_tree *popup_root(struct ts_server *server, struct wlr_sc
 	return tree;
 }
 
-static void popup_commit(struct wl_listener *listener, void *data) {
-	struct ts_popup *popup = wl_container_of(listener, popup, commit);
-	struct wlr_xdg_popup *xdg_popup = popup->xdg_popup;
-	if (!xdg_popup->base->initial_commit) {
-		return;
-	}
+/* Keeps a menu or tooltip on its screen: the app says where it would like it
+ * and how it may be moved (flipped, slid) if that doesn't fit. */
+static void popup_unconstrain(struct wlr_xdg_popup *xdg_popup) {
 	struct wlr_scene_tree *tree = xdg_popup->base->data;
-	struct ts_server *server = NULL;
 	struct ts_node *owner = NULL;
-	struct wlr_scene_tree *root = NULL;
 	if (tree && tree->node.parent) {
-		/* Find the server through the owner of the root popup tree. */
+		/* The owner (a window or a panel) is marked on the root popup tree. */
 		struct wlr_scene_tree *t = tree;
 		while (t && t->node.data == NULL) {
 			t = t->node.parent;
 		}
 		owner = t ? t->node.data : NULL;
 	}
+	struct ts_server *server = NULL;
+	int ox = 0, oy = 0; /* where the owner's surface starts, from the root tree */
 	if (owner && owner->kind == TS_NODE_VIEW) {
-		server = ((struct ts_view *)owner)->server;
+		struct ts_view *view = (struct ts_view *)owner;
+		server = view->server;
+		/* The root tree sits at the window's visible edge; the surface may
+		 * start before it (a shadow drawn by the app). */
+		struct wlr_box geo;
+		view_get_geometry(view, &geo);
+		ox = -geo.x;
+		oy = -geo.y;
 	} else if (owner && owner->kind == TS_NODE_LAYER) {
 		server = ((struct ts_layer_surface *)owner)->server;
 	}
-	if (server) {
-		root = popup_root(server, tree);
-		int lx = root->node.x, ly = root->node.y;
-		struct ts_output *output = output_at(server, lx, ly);
-		if (output == NULL) {
-			output = output_focused(server);
-		}
-		if (output) {
-			struct wlr_box box = output->full_area;
-			box.x -= lx;
-			box.y -= ly;
-			wlr_xdg_popup_unconstrain_from_box(xdg_popup, &box);
-		}
+	if (server == NULL) {
+		return;
 	}
-	wlr_xdg_surface_schedule_configure(xdg_popup->base);
+	struct wlr_scene_tree *root = popup_root(server, tree);
+	int lx = root->node.x + ox, ly = root->node.y + oy;
+	struct ts_output *output = output_at(server, root->node.x, root->node.y);
+	if (output == NULL) {
+		output = output_focused(server);
+	}
+	if (output == NULL) {
+		return;
+	}
+	/* The screen, measured from the owner's surface. */
+	struct wlr_box box = output->full_area;
+	box.x -= lx;
+	box.y -= ly;
+	wlr_xdg_popup_unconstrain_from_box(xdg_popup, &box);
+}
+
+static void popup_commit(struct wl_listener *listener, void *data) {
+	struct ts_popup *popup = wl_container_of(listener, popup, commit);
+	if (popup->xdg_popup->base->initial_commit) {
+		popup_unconstrain(popup->xdg_popup);
+		wlr_xdg_surface_schedule_configure(popup->xdg_popup->base);
+	}
+}
+
+/* The app asked to move the popup (its size or place changed). */
+static void popup_reposition(struct wl_listener *listener, void *data) {
+	struct ts_popup *popup = wl_container_of(listener, popup, reposition);
+	popup_unconstrain(popup->xdg_popup);
 }
 
 static void popup_destroy(struct wl_listener *listener, void *data) {
 	struct ts_popup *popup = wl_container_of(listener, popup, destroy);
 	wl_list_remove(&popup->commit.link);
+	wl_list_remove(&popup->reposition.link);
 	wl_list_remove(&popup->destroy.link);
 	free(popup);
 }
@@ -1007,6 +1045,8 @@ void popup_create(struct wlr_xdg_popup *xdg_popup, struct wlr_scene_tree *parent
 	popup->xdg_popup = xdg_popup;
 	popup->commit.notify = popup_commit;
 	wl_signal_add(&xdg_popup->base->surface->events.commit, &popup->commit);
+	popup->reposition.notify = popup_reposition;
+	wl_signal_add(&xdg_popup->events.reposition, &popup->reposition);
 	popup->destroy.notify = popup_destroy;
 	wl_signal_add(&xdg_popup->events.destroy, &popup->destroy);
 }

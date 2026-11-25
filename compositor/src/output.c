@@ -41,23 +41,31 @@ static void close_layer_surfaces(struct ts_output *output) {
 	}
 }
 
-/* The screen others line up against and mirror: the built-in one if it is
- * in use, otherwise the first screen in use. */
+/* A laptop's own screen, going by how it is connected. */
 static bool output_is_builtin(struct wlr_output *wlr_output) {
 	return strncmp(wlr_output->name, "eDP", 3) == 0 ||
 		strncmp(wlr_output->name, "LVDS", 4) == 0 || strncmp(wlr_output->name, "DSI", 3) == 0;
 }
 
-static struct ts_output *main_output(struct ts_server *server) {
-	struct ts_output *output, *first = NULL;
+/* The laptop's own screen, if it is in use. */
+struct ts_output *output_builtin(struct ts_server *server) {
+	struct ts_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
 		if (output_is_builtin(output->wlr_output)) {
 			return output;
 		}
-		if (first == NULL) {
-			first = output;
-		}
 	}
+	return NULL;
+}
+
+/* The screen others line up against and mirror: the built-in one if it is
+ * in use, otherwise the first screen in use. */
+static struct ts_output *main_output(struct ts_server *server) {
+	struct ts_output *builtin = output_builtin(server);
+	if (builtin != NULL || wl_list_empty(&server->outputs)) {
+		return builtin;
+	}
+	struct ts_output *first = wl_container_of(server->outputs.next, first, link);
 	return first;
 }
 
@@ -76,12 +84,8 @@ static void output_join_layout(struct ts_output *output) {
 	wlr_scene_node_set_enabled(&output->background->node, true);
 }
 
-/* Out of use (switched off, or mirroring): its windows move to the main
- * screen. */
-static void output_leave_layout(struct ts_output *output) {
-	if (!output->in_layout) {
-		return;
-	}
+/* Lets go of everything shown on a screen that goes out of use. */
+static void output_forget(struct ts_output *output) {
 	struct ts_server *server = output->server;
 	lock_output_destroyed(output);
 	layout_output_destroyed(output);
@@ -91,6 +95,19 @@ static void output_leave_layout(struct ts_output *output) {
 		server->ratio_output = NULL;
 		server->cursor_mode = TS_CURSOR_PASSTHROUGH;
 	}
+	if (server->active_output == output) {
+		server->active_output = NULL;
+	}
+}
+
+/* Out of use (switched off, or mirroring): its windows move to the main
+ * screen. */
+static void output_leave_layout(struct ts_output *output) {
+	if (!output->in_layout) {
+		return;
+	}
+	struct ts_server *server = output->server;
+	output_forget(output);
 	wlr_scene_node_set_enabled(&output->background->node, false);
 	wlr_output_layout_remove(server->output_layout, output->wlr_output);
 	wl_list_remove(&output->link);
@@ -111,14 +128,7 @@ static void output_leave_layout(struct ts_output *output) {
 static void output_destroy(struct wl_listener *listener, void *data) {
 	struct ts_output *output = wl_container_of(listener, output, destroy);
 	struct ts_server *server = output->server;
-	lock_output_destroyed(output);
-	layout_output_destroyed(output);
-	wallpaper_output_destroyed(output);
-	if (server->ratio_output == output) {
-		server->ratio_output = NULL;
-		server->cursor_mode = TS_CURSOR_PASSTHROUGH;
-	}
-	close_layer_surfaces(output);
+	output_forget(output);
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->destroy.link);
@@ -423,6 +433,7 @@ void outputs_apply_config(struct ts_server *server) {
 	place_outputs(server);
 	update_mirrors(server);
 	update_output_manager(server);
+	input_map_devices(server);
 	ipc_broadcast(server, "{\"event\":\"outputs\"}");
 }
 
@@ -477,6 +488,7 @@ static bool apply_from_tool(struct ts_server *server, struct wlr_output_configur
 	arrange_all(server);
 	wallpaper_update(server);
 	update_output_manager(server);
+	input_map_devices(server);
 	ipc_broadcast(server, "{\"event\":\"outputs\"}");
 	return ok;
 }
@@ -604,9 +616,25 @@ struct ts_output *output_at(struct ts_server *server, double lx, double ly) {
 	return wlr_output ? wlr_output->data : NULL;
 }
 
+/* A screen in use, by its connector name (such as HDMI-A-1). */
+struct ts_output *output_by_name(struct ts_server *server, const char *name) {
+	struct ts_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (strcmp(output->wlr_output->name, name) == 0) {
+			return output;
+		}
+	}
+	return NULL;
+}
+
+/* The screen in use: the focused window's, else the one picked last, else
+ * the one under the pointer. */
 struct ts_output *output_focused(struct ts_server *server) {
 	if (server->focused_view && server->focused_view->output) {
 		return server->focused_view->output;
+	}
+	if (server->active_output) {
+		return server->active_output;
 	}
 	struct ts_output *output = output_at(server, server->cursor->x, server->cursor->y);
 	if (output) {

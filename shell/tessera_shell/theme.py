@@ -1,6 +1,7 @@
 """Colours, the shell's stylesheet and the shared desktop settings."""
 
 import os
+import re
 
 from gi.repository import Gdk, Gio, Gtk
 
@@ -45,10 +46,16 @@ ACCENTS = {
 }
 
 
+# A colour written as #RRGGBB, or #RRGGBBAA (the AA part is not used here).
+HEX_COLOUR = re.compile(r"#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?")
+
+
 def accent_hex(value, dark):
+    """The accent colour for a named accent or a colour code; anything else
+    (such as a mistyped code) gets the default orange."""
     if value in ACCENTS:
         return ACCENTS[value][0 if dark else 1]
-    if value.startswith("#") and len(value) in (7, 9):
+    if HEX_COLOUR.fullmatch(value):
         return value[:7]
     return ACCENTS["orange"][0 if dark else 1]
 

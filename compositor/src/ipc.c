@@ -106,8 +106,18 @@ void ipc_broadcast(struct ts_server *server, const char *json_line) {
 	}
 }
 
-static void state_json(struct ts_server *server, char *buf, size_t size) {
-	struct ts_output *output = output_focused(server);
+/* Room for a state line: the title and app id, and every screen's workspaces. */
+#define STATE_MAX 4096
+
+/* One screen's workspaces with windows, and those with a window that needs
+ * attention, as JSON number lists ("1,3"). */
+struct workspace_lists {
+	char occupied[32];
+	char urgent[32];
+};
+
+static void workspace_lists(struct ts_server *server, struct ts_output *output,
+		struct workspace_lists *lists) {
 	int current = output ? output->workspace : 1;
 	bool occupied[TS_WORKSPACES + 1] = {0};
 	bool urgent[TS_WORKSPACES + 1] = {0};
@@ -120,16 +130,44 @@ static void state_json(struct ts_server *server, char *buf, size_t size) {
 			}
 		}
 	}
-	char occ[64] = "", urg[64] = "";
 	size_t o = 0, u = 0;
+	lists->occupied[0] = lists->urgent[0] = '\0';
 	for (int i = 1; i <= TS_WORKSPACES; i++) {
 		if (occupied[i]) {
-			o += snprintf(occ + o, sizeof(occ) - o, "%s%d", o ? "," : "", i);
+			o += snprintf(lists->occupied + o, sizeof(lists->occupied) - o, "%s%d",
+				o ? "," : "", i);
 		}
 		if (urgent[i]) {
-			u += snprintf(urg + u, sizeof(urg) - u, "%s%d", u ? "," : "", i);
+			u += snprintf(lists->urgent + u, sizeof(lists->urgent) - u, "%s%d", u ? "," : "", i);
 		}
 	}
+}
+
+/* The state of the screen in use, plus each screen's own workspaces (for the
+ * bar on that screen). */
+static void state_json(struct ts_server *server, char *buf, size_t size) {
+	struct ts_output *focused = output_focused(server);
+	struct workspace_lists lists;
+	workspace_lists(server, focused, &lists);
+
+	char screens[STATE_MAX / 2] = "";
+	size_t used = 0;
+	struct ts_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		struct workspace_lists own;
+		workspace_lists(server, output, &own);
+		char name[64];
+		json_escape(name, sizeof(name), output->wlr_output->name);
+		int n = snprintf(screens + used, sizeof(screens) - used,
+			"%s{\"name\":\"%s\",\"workspace\":%d,\"occupied\":[%s],\"urgent\":[%s]}",
+			used ? "," : "", name, output->workspace, own.occupied, own.urgent);
+		if (n < 0 || (size_t)n >= sizeof(screens) - used) {
+			screens[used] = '\0'; /* leaves out a screen that doesn't fit */
+			break;
+		}
+		used += (size_t)n;
+	}
+
 	char title[512] = "", app[256] = "";
 	if (server->focused_view) {
 		json_escape(title, sizeof(title), view_title(server->focused_view));
@@ -137,11 +175,12 @@ static void state_json(struct ts_server *server, char *buf, size_t size) {
 	}
 	snprintf(buf, size,
 		"{\"event\":\"state\",\"workspace\":%d,\"workspaces\":%d,\"occupied\":[%s],"
-		"\"urgent\":[%s],\"title\":\"%s\",\"app_id\":\"%s\",\"locked\":%s,\"theme\":\"%s\","
-		"\"night_light\":%s,\"compact\":%s}",
-		current, TS_WORKSPACES, occ, urg, title, app, server->locked ? "true" : "false",
+		"\"urgent\":[%s],\"outputs\":[%s],\"title\":\"%s\",\"app_id\":\"%s\",\"locked\":%s,"
+		"\"theme\":\"%s\",\"night_light\":%s,\"compact\":%s}",
+		focused ? focused->workspace : 1, TS_WORKSPACES, lists.occupied, lists.urgent,
+		screens, title, app, server->locked ? "true" : "false",
 		server->theme.dark ? "dark" : "light", server->night_active ? "true" : "false",
-		output && output_is_compact(output) ? "true" : "false");
+		focused && output_is_compact(focused) ? "true" : "false");
 }
 
 /* FNV-1a: tells whether a client already has this exact state. */
@@ -161,7 +200,7 @@ void ipc_send_state(struct ts_server *server) {
 	if (wl_list_empty(&server->ipc_clients)) {
 		return;
 	}
-	char buf[1024];
+	char buf[STATE_MAX];
 	state_json(server, buf, sizeof(buf));
 	uint64_t hash = text_hash(buf);
 	struct ts_ipc_client *client, *tmp;
@@ -212,7 +251,7 @@ static void handle_command(struct ts_ipc_client *client, char *line) {
 
 	if (strcmp(line, "subscribe") == 0) {
 		client->subscribed = true;
-		char buf[1024];
+		char buf[STATE_MAX];
 		state_json(server, buf, sizeof(buf));
 		client->state_hash = text_hash(buf);
 		client_write(client, buf);
@@ -223,17 +262,32 @@ static void handle_command(struct ts_ipc_client *client, char *line) {
 		free(json);
 		return;
 	} else if (strcmp(line, "state") == 0) {
-		char buf[1024];
+		char buf[STATE_MAX];
 		state_json(server, buf, sizeof(buf));
 		client_write(client, buf);
 		return;
 	} else if (strcmp(line, "workspace") == 0 && arg) {
+		/* A second word names the screen (the bar on that screen sends it);
+		 * without it, the screen in use. */
+		char *screen = strchr(arg, ' ');
+		if (screen) {
+			*screen++ = '\0';
+			while (*screen == ' ') {
+				screen++;
+			}
+		}
+		struct ts_output *output = screen && *screen ? output_by_name(server, screen)
+			: output_focused(server);
+		if (output == NULL) {
+			client_write(client, "{\"ok\":false,\"error\":\"no such screen\"}");
+			return;
+		}
 		if (strcmp(arg, "next") == 0) {
-			workspace_step(server, 1);
+			workspace_step_output(output, 1);
 		} else if (strcmp(arg, "prev") == 0 || strcmp(arg, "previous") == 0) {
-			workspace_step(server, -1);
+			workspace_step_output(output, -1);
 		} else {
-			workspace_switch(server, atoi(arg));
+			workspace_switch_output(output, atoi(arg));
 		}
 	} else if (strcmp(line, "focus") == 0 && arg) {
 		uint32_t id = (uint32_t)strtoul(arg, NULL, 10);
@@ -408,7 +462,7 @@ void ipc_finish(struct ts_server *server) {
 int ipc_client_main(int argc, char **argv) {
 	if (argc < 1) {
 		fprintf(stderr, "Usage: tessera msg COMMAND [ARGUMENT]\n"
-			"Commands: workspace N|next|prev, move-to-workspace N, focus ID, exec CMD,\n"
+			"Commands: workspace N|next|prev [SCREEN], move-to-workspace N, focus ID, exec CMD,\n"
 			"          close, fullscreen, float, lock, reload, logout, state, outputs, subscribe,\n"
 			"          dpms on|off, night-light on|off|toggle, help\n");
 		return 1;

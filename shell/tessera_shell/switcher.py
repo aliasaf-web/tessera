@@ -68,7 +68,6 @@ class Switcher:
             return
         windows = event.get("windows", [])
         selected = event.get("selected", 0)
-        current_ws = self.shell.state.get("workspace", 1)
         clear(self.row)
         # Show a window of up to MAX_SHOWN entries around the selection.
         start = max(0, min(selected - self.MAX_SHOWN // 2, len(windows) - self.MAX_SHOWN))
@@ -97,9 +96,11 @@ class Switcher:
         if 0 <= selected < len(windows):
             win = windows[selected]
             self.caption.set_label(win.get("title") or "")
+            # Only for a window that no screen is showing now.
             ws = win.get("workspace", 0)
-            self.where.set_label(f"On workspace {ws}" if ws and ws != current_ws else "")
-            self.where.set_visible(bool(ws and ws != current_ws))
+            hidden = bool(ws and win.get("hidden"))
+            self.where.set_label(f"On workspace {ws}" if hidden else "")
+            self.where.set_visible(hidden)
         if not self.window.get_visible() and self.pending is None:
             # A quick Alt+Tab tap switches without flashing the list.
             self.pending = GLib.timeout_add(120, self._show)

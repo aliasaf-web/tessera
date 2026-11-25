@@ -14,6 +14,8 @@
 #include <wlr/types/wlr_pointer_gestures_v1.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
+#include <wlr/types/wlr_tablet_tool.h>
+#include <wlr/types/wlr_touch.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/util/log.h>
@@ -456,6 +458,12 @@ static void update_capabilities(struct ts_server *server) {
 	if (!wl_list_empty(&server->keyboards)) {
 		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
 	}
+	struct ts_pointer *pointer;
+	wl_list_for_each(pointer, &server->pointers, link) {
+		if (pointer->device->type == WLR_INPUT_DEVICE_TOUCH) {
+			caps |= WL_SEAT_CAPABILITY_TOUCH;
+		}
+	}
 	wlr_seat_set_capabilities(server->seat, caps);
 }
 
@@ -506,9 +514,11 @@ static void configure_libinput(struct ts_server *server, struct wlr_input_device
 
 static void pointer_destroy(struct wl_listener *listener, void *data) {
 	struct ts_pointer *pointer = wl_container_of(listener, pointer, destroy);
+	struct ts_server *server = pointer->server;
 	wl_list_remove(&pointer->destroy.link);
 	wl_list_remove(&pointer->link);
 	free(pointer);
+	update_capabilities(server); /* the last touch screen may have gone */
 }
 
 /* True for a mouse or touchpad, false for a pointer made by an app. */
@@ -535,6 +545,25 @@ static void new_pointer(struct ts_server *server, struct wlr_input_device *devic
 	pointer->destroy.notify = pointer_destroy;
 	wl_signal_add(&device->events.destroy, &pointer->destroy);
 	wl_list_insert(&server->pointers, &pointer->link);
+	input_map_devices(server);
+}
+
+/* A touch screen gives positions on its own screen: the one it names, or
+ * else the laptop's built-in screen (all screens if neither is in use).
+ * Done again whenever the screens change, so it never points at a screen
+ * that has gone. Drawing tablets cover all screens. */
+void input_map_devices(struct ts_server *server) {
+	struct ts_pointer *pointer;
+	wl_list_for_each(pointer, &server->pointers, link) {
+		struct wlr_input_device *device = pointer->device;
+		if (device->type != WLR_INPUT_DEVICE_TOUCH) {
+			continue;
+		}
+		const char *name = wlr_touch_from_input_device(device)->output_name;
+		struct ts_output *target = name ? output_by_name(server, name) : output_builtin(server);
+		wlr_cursor_map_input_to_output(server->cursor, device,
+			target ? target->wlr_output : NULL);
+	}
 }
 
 void pointers_apply_config(struct ts_server *server) {
@@ -666,6 +695,9 @@ static void update_pointer_focus(struct ts_server *server, uint32_t time) {
 		if (output && output != view->output) {
 			view->output = output;
 			view->workspace = output->workspace;
+			if (server->focused_view == view) {
+				server->active_output = output;
+			}
 		}
 		return;
 	}
@@ -1019,16 +1051,28 @@ static uint32_t edges_for_point(struct ts_view *view, double lx, double ly) {
 	return edges;
 }
 
-static void cursor_button(struct wl_listener *listener, void *data) {
-	struct ts_server *server = wl_container_of(listener, server, cursor_button);
-	struct wlr_pointer_button_event *event = data;
+/* A click gives the keyboard to the window or panel under it. */
+static void focus_hit(struct ts_server *server, const struct hit *hit) {
+	if (hit->view) {
+		view_focus(hit->view);
+	} else if (hit->layer && hit->layer->layer_surface->current.keyboard_interactive !=
+			ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) {
+		server->focused_layer = hit->layer;
+		seat_focus_surface(server, hit->layer->layer_surface->surface);
+	}
+}
+
+/* A mouse button, or what acts as one (a finger, a tablet pen). `real`: from
+ * a device, not made by an app. */
+static void pointer_button(struct ts_server *server, uint32_t time_msec, uint32_t button,
+		enum wl_pointer_button_state state, bool real) {
 	notify_activity(server);
 	server->super_alone = false;
 
-	bool pressed = event->state == WL_POINTER_BUTTON_STATE_PRESSED;
+	bool pressed = state == WL_POINTER_BUTTON_STATE_PRESSED;
 	if (server->locked) {
-		/* Only a real mouse or touchpad can use the lock screen's buttons. */
-		if (pressed && event->button == BTN_LEFT && pointer_is_real(server, event->pointer)) {
+		/* Only a real device can use the lock screen's buttons. */
+		if (pressed && button == BTN_LEFT && real) {
 			lock_handle_click(server, server->cursor->x, server->cursor->y);
 		}
 		return;
@@ -1055,9 +1099,9 @@ static void cursor_button(struct wl_listener *listener, void *data) {
 
 		if (hit.view && super) {
 			view_focus(hit.view);
-			if (event->button == BTN_LEFT) {
+			if (button == BTN_LEFT) {
 				input_begin_move(hit.view);
-			} else if (event->button == BTN_RIGHT && hit.view->floating) {
+			} else if (button == BTN_RIGHT && hit.view->floating) {
 				input_begin_resize(hit.view, edges_for_point(hit.view, lx, ly));
 			}
 			return;
@@ -1065,7 +1109,7 @@ static void cursor_button(struct wl_listener *listener, void *data) {
 
 		if (hit.view && hit.on_frame) {
 			view_focus(hit.view);
-			if (event->button != BTN_LEFT) {
+			if (button != BTN_LEFT) {
 				return;
 			}
 			if (hit.view->ssd && hit.fy < deco_titlebar_height() &&
@@ -1076,12 +1120,12 @@ static void cursor_button(struct wl_listener *listener, void *data) {
 			}
 			/* A double click on the title bar maximizes. */
 			if (hit.fy < deco_titlebar_height() && server->title_click_view == hit.view &&
-					event->time_msec - server->title_click_time < 400) {
+					time_msec - server->title_click_time < 400) {
 				server->title_click_view = NULL;
 				view_set_maximized(hit.view, !hit.view->maximized);
 				return;
 			}
-			server->title_click_time = event->time_msec;
+			server->title_click_time = time_msec;
 			server->title_click_view = hit.view;
 			if (hit.view->floating) {
 				/* Edges of a floating window resize it. */
@@ -1099,7 +1143,15 @@ static void cursor_button(struct wl_listener *listener, void *data) {
 			return;
 		}
 
-		if (!hit.view && !hit.layer && event->button == BTN_LEFT) {
+		if (!hit.view && !hit.layer && !hit.surface) {
+			/* A click on a screen's desktop makes it the screen in use. */
+			struct ts_output *output = output_at(server, lx, ly);
+			if (output && output != output_focused(server)) {
+				focus_output(server, output);
+			}
+		}
+
+		if (!hit.view && !hit.layer && button == BTN_LEFT) {
 			struct ts_output *output = output_at(server, lx, ly);
 			if (layout_gap_hit(output, lx, ly)) {
 				server->cursor_mode = TS_CURSOR_RATIO;
@@ -1108,16 +1160,17 @@ static void cursor_button(struct wl_listener *listener, void *data) {
 			}
 		}
 
-		if (hit.view) {
-			view_focus(hit.view);
-		} else if (hit.layer && hit.layer->layer_surface->current.keyboard_interactive !=
-				ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) {
-			server->focused_layer = hit.layer;
-			seat_focus_surface(server, hit.layer->layer_surface->surface);
-		}
+		focus_hit(server, &hit);
 	}
 
-	wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
+	wlr_seat_pointer_notify_button(server->seat, time_msec, button, state);
+}
+
+static void cursor_button(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, cursor_button);
+	struct wlr_pointer_button_event *event = data;
+	pointer_button(server, event->time_msec, event->button, event->state,
+		pointer_is_real(server, event->pointer));
 }
 
 static void cursor_axis(struct wl_listener *listener, void *data) {
@@ -1133,6 +1186,199 @@ static void cursor_axis(struct wl_listener *listener, void *data) {
 
 static void cursor_frame(struct wl_listener *listener, void *data) {
 	struct ts_server *server = wl_container_of(listener, server, cursor_frame);
+	wlr_seat_pointer_notify_frame(server->seat);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Touch screens                                                            */
+/* ---------------------------------------------------------------------- */
+
+/* Whether the app has asked for touch input (most toolkits do). */
+static bool surface_takes_touch(struct ts_server *server, struct wlr_surface *surface) {
+	struct wlr_seat_client *seat_client = wlr_seat_client_for_wl_client(server->seat,
+		wl_resource_get_client(surface->resource));
+	return seat_client != NULL && !wl_list_empty(&seat_client->touches);
+}
+
+static int touch_point_index(struct ts_server *server, int32_t id) {
+	for (int i = 0; i < server->touch_count; i++) {
+		if (server->touch_points[i].id == id) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void touch_point_remove(struct ts_server *server, int i) {
+	server->touch_points[i] = server->touch_points[--server->touch_count];
+}
+
+/* Moves the pointer to the finger that acts as the mouse. */
+static void touch_mouse_move(struct ts_server *server, struct wlr_touch *touch,
+		double x, double y, uint32_t time_msec) {
+	wlr_cursor_warp_absolute(server->cursor, &touch->base, x, y);
+	process_motion(server, time_msec);
+	wlr_seat_pointer_notify_frame(server->seat);
+}
+
+static void touch_mouse_button(struct ts_server *server, uint32_t time_msec,
+		enum wl_pointer_button_state state) {
+	pointer_button(server, time_msec, BTN_LEFT, state, true);
+	wlr_seat_pointer_notify_frame(server->seat);
+}
+
+static void touch_down(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, touch_down);
+	struct wlr_touch_down_event *event = data;
+	notify_activity(server);
+	if (server->cursor_mode != TS_CURSOR_PASSTHROUGH) {
+		return; /* a window is being moved or resized */
+	}
+	double lx, ly;
+	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base,
+		event->x, event->y, &lx, &ly);
+	if (!server->locked) {
+		struct hit hit = hit_test(server, lx, ly);
+		if (hit.surface && surface_takes_touch(server, hit.surface)) {
+			if (server->touch_count == TS_TOUCH_POINTS) {
+				return;
+			}
+			focus_hit(server, &hit);
+			server->touch_points[server->touch_count++] = (struct ts_touch_point){
+				event->touch_id, lx - hit.sx, ly - hit.sy };
+			wlr_seat_touch_notify_down(server->seat, hit.surface, event->time_msec,
+				event->touch_id, hit.sx, hit.sy);
+			return;
+		}
+	}
+	/* Anywhere else (title bars, the desktop, the lock screen, apps that
+	 * don't take touch) one finger at a time acts as the mouse. */
+	if (server->touch_as_mouse) {
+		return;
+	}
+	server->touch_as_mouse = true;
+	server->touch_mouse_id = event->touch_id;
+	touch_mouse_move(server, event->touch, event->x, event->y, event->time_msec);
+	touch_mouse_button(server, event->time_msec, WL_POINTER_BUTTON_STATE_PRESSED);
+}
+
+static void touch_motion(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, touch_motion);
+	struct wlr_touch_motion_event *event = data;
+	notify_activity(server);
+	if (server->touch_as_mouse && event->touch_id == server->touch_mouse_id) {
+		touch_mouse_move(server, event->touch, event->x, event->y, event->time_msec);
+		return;
+	}
+	int i = touch_point_index(server, event->touch_id);
+	if (i < 0 || server->locked) {
+		return;
+	}
+	double lx, ly;
+	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base,
+		event->x, event->y, &lx, &ly);
+	wlr_seat_touch_notify_motion(server->seat, event->time_msec, event->touch_id,
+		lx - server->touch_points[i].ox, ly - server->touch_points[i].oy);
+}
+
+static void touch_up(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, touch_up);
+	struct wlr_touch_up_event *event = data;
+	notify_activity(server);
+	if (server->touch_as_mouse && event->touch_id == server->touch_mouse_id) {
+		server->touch_as_mouse = false;
+		touch_mouse_button(server, event->time_msec, WL_POINTER_BUTTON_STATE_RELEASED);
+		return;
+	}
+	int i = touch_point_index(server, event->touch_id);
+	if (i >= 0) {
+		touch_point_remove(server, i);
+		wlr_seat_touch_notify_up(server->seat, event->time_msec, event->touch_id);
+	}
+}
+
+/* The touch screen gave up on a finger (for example, the screen turned off). */
+static void touch_cancel(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, touch_cancel);
+	struct wlr_touch_cancel_event *event = data;
+	if (server->touch_as_mouse && event->touch_id == server->touch_mouse_id) {
+		server->touch_as_mouse = false;
+		touch_mouse_button(server, event->time_msec, WL_POINTER_BUTTON_STATE_RELEASED);
+		return;
+	}
+	if (touch_point_index(server, event->touch_id) < 0) {
+		return;
+	}
+	struct wlr_touch_point *point = wlr_seat_touch_get_point(server->seat, event->touch_id);
+	if (point && point->client) {
+		/* The app is told to forget all its fingers, and so are we. */
+		wlr_seat_touch_notify_cancel(server->seat, point->client);
+	}
+	for (int i = server->touch_count - 1; i >= 0; i--) {
+		if (wlr_seat_touch_get_point(server->seat, server->touch_points[i].id) == NULL) {
+			touch_point_remove(server, i);
+		}
+	}
+}
+
+static void touch_frame(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, touch_frame);
+	wlr_seat_touch_notify_frame(server->seat);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Drawing tablets: the pen works like a mouse (pressure and tilt are not  */
+/* passed on).                                                              */
+/* ---------------------------------------------------------------------- */
+
+/* x or y is NAN when only the other one changed. */
+static void tablet_move(struct ts_server *server, struct wlr_tablet *tablet,
+		double x, double y, uint32_t time_msec) {
+	notify_activity(server);
+	wlr_cursor_warp_absolute(server->cursor, &tablet->base, x, y);
+	process_motion(server, time_msec);
+	wlr_seat_pointer_notify_frame(server->seat);
+}
+
+static void tablet_axis(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, tablet_axis);
+	struct wlr_tablet_tool_axis_event *event = data;
+	uint32_t axes = event->updated_axes;
+	if (axes & (WLR_TABLET_TOOL_AXIS_X | WLR_TABLET_TOOL_AXIS_Y)) {
+		tablet_move(server, event->tablet, axes & WLR_TABLET_TOOL_AXIS_X ? event->x : NAN,
+			axes & WLR_TABLET_TOOL_AXIS_Y ? event->y : NAN, event->time_msec);
+	}
+}
+
+static void tablet_proximity(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, tablet_proximity);
+	struct wlr_tablet_tool_proximity_event *event = data;
+	if (event->state == WLR_TABLET_TOOL_PROXIMITY_IN) {
+		tablet_move(server, event->tablet, event->x, event->y, event->time_msec);
+	}
+}
+
+/* The pen's tip on the tablet is the left button. */
+static void tablet_tip(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, tablet_tip);
+	struct wlr_tablet_tool_tip_event *event = data;
+	tablet_move(server, event->tablet, event->x, event->y, event->time_msec);
+	pointer_button(server, event->time_msec, BTN_LEFT,
+		event->state == WLR_TABLET_TOOL_TIP_DOWN ? WL_POINTER_BUTTON_STATE_PRESSED
+			: WL_POINTER_BUTTON_STATE_RELEASED, true);
+	wlr_seat_pointer_notify_frame(server->seat);
+}
+
+/* The pen's buttons: the lower one is the right button, the upper one the
+ * middle button. */
+static void tablet_button(struct wl_listener *listener, void *data) {
+	struct ts_server *server = wl_container_of(listener, server, tablet_button);
+	struct wlr_tablet_tool_button_event *event = data;
+	uint32_t button = event->button == BTN_STYLUS ? BTN_RIGHT
+		: event->button == BTN_STYLUS2 ? BTN_MIDDLE : event->button;
+	pointer_button(server, event->time_msec, button,
+		event->state == WLR_BUTTON_PRESSED ? WL_POINTER_BUTTON_STATE_PRESSED
+			: WL_POINTER_BUTTON_STATE_RELEASED, true);
 	wlr_seat_pointer_notify_frame(server->seat);
 }
 
@@ -1372,6 +1618,24 @@ void input_init(struct ts_server *server) {
 	wl_signal_add(&server->cursor->events.hold_begin, &server->hold_begin);
 	server->hold_end.notify = hold_end;
 	wl_signal_add(&server->cursor->events.hold_end, &server->hold_end);
+	server->touch_down.notify = touch_down;
+	wl_signal_add(&server->cursor->events.touch_down, &server->touch_down);
+	server->touch_motion.notify = touch_motion;
+	wl_signal_add(&server->cursor->events.touch_motion, &server->touch_motion);
+	server->touch_up.notify = touch_up;
+	wl_signal_add(&server->cursor->events.touch_up, &server->touch_up);
+	server->touch_cancel.notify = touch_cancel;
+	wl_signal_add(&server->cursor->events.touch_cancel, &server->touch_cancel);
+	server->touch_frame.notify = touch_frame;
+	wl_signal_add(&server->cursor->events.touch_frame, &server->touch_frame);
+	server->tablet_axis.notify = tablet_axis;
+	wl_signal_add(&server->cursor->events.tablet_tool_axis, &server->tablet_axis);
+	server->tablet_proximity.notify = tablet_proximity;
+	wl_signal_add(&server->cursor->events.tablet_tool_proximity, &server->tablet_proximity);
+	server->tablet_tip.notify = tablet_tip;
+	wl_signal_add(&server->cursor->events.tablet_tool_tip, &server->tablet_tip);
+	server->tablet_button.notify = tablet_button;
+	wl_signal_add(&server->cursor->events.tablet_tool_button, &server->tablet_button);
 
 	wl_list_init(&server->keyboards);
 	wl_list_init(&server->pointers);

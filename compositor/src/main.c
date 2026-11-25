@@ -13,6 +13,7 @@
 #include <wlr/types/wlr_export_dmabuf_v1.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
+#include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_pointer_gestures_v1.h>
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
@@ -89,7 +90,8 @@ static bool is_privileged(struct ts_server *server, const struct wl_global *glob
 		global == server->data_control->global ||
 		global == server->virtual_keyboard->global ||
 		global == server->virtual_pointer->global ||
-		global == server->layer_shell->global;
+		global == server->layer_shell->global ||
+		global == server->output_manager->global;
 }
 
 static bool filter_global(const struct wl_client *client, const struct wl_global *global,
