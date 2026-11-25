@@ -217,51 +217,92 @@ void view_update_frame(struct ts_view *view) {
 	wlr_scene_node_set_enabled(&view->fs_bg->node, false);
 	wlr_scene_node_set_enabled(&view->frame->node, true);
 
-	if (view->frame_dirty || view->frame_w != b.width || view->frame_h != b.height ||
-			view->frame_focused != focused || view->frame_scale != scale) {
-		struct wlr_buffer *buf = deco_render_frame(server, b.width, b.height, scale,
-			view_title(view), focused, view->ssd, view->frame_hover_close, view->floating);
+	/* Background and outline are rectangles: only their sizes change when
+	 * the window is resized. */
+	struct ts_theme *t = &server->theme;
+	float surface[4] = { t->surface.r, t->surface.g, t->surface.b, t->surface.a };
+	wlr_scene_rect_set_color(view->frame_bg, surface);
+	int bg_y = view->ssd ? T : 0;
+	wlr_scene_rect_set_size(view->frame_bg, b.width, b.height - bg_y);
+	wlr_scene_node_set_position(&view->frame_bg->node, 0, bg_y);
+
+	int e;
+	struct ts_color oc = deco_outline_color(server, focused, view->floating, &e);
+	float outline[4] = { oc.r, oc.g, oc.b, oc.a };
+	/* Sides start below the title bar (it draws its own outline) or below
+	 * the top edge, so no pixel is covered twice. */
+	int side_y = view->ssd ? T : e;
+	struct wlr_box edges[4] = {
+		{ 0, 0, b.width, e },                              /* top */
+		{ b.width - e, side_y, e, b.height - e - side_y }, /* right */
+		{ 0, b.height - e, b.width, e },                   /* bottom */
+		{ 0, side_y, e, b.height - e - side_y },           /* left */
+	};
+	for (int i = 0; i < 4; i++) {
+		bool shown = e > 0 && edges[i].height > 0 && !(i == 0 && view->ssd);
+		wlr_scene_node_set_enabled(&view->edges[i]->node, shown);
+		if (shown) {
+			wlr_scene_rect_set_color(view->edges[i], outline);
+			wlr_scene_rect_set_size(view->edges[i], edges[i].width, edges[i].height);
+			wlr_scene_node_set_position(&view->edges[i]->node, edges[i].x, edges[i].y);
+		}
+	}
+
+	/* The title bar is the only drawn image; it changes with the width, focus,
+	 * title, close button hover and theme, not with the height. */
+	bool restyle = view->frame_focused != focused || view->frame_scale != scale;
+	wlr_scene_node_set_enabled(&view->titlebar->node, view->ssd);
+	if (view->ssd && (view->frame_dirty || restyle || view->frame_w != b.width ||
+			view->titlebar->buffer == NULL)) {
+		struct wlr_buffer *buf = deco_render_titlebar(server, b.width, scale,
+			view_title(view), focused, view->frame_hover_close, view->floating);
 		if (buf) {
-			wlr_scene_buffer_set_buffer(view->frame, buf);
-			wlr_scene_buffer_set_dest_size(view->frame, b.width, b.height);
+			wlr_scene_buffer_set_buffer(view->titlebar, buf);
+			wlr_scene_buffer_set_dest_size(view->titlebar, b.width, T);
 			wlr_buffer_drop(buf);
 		}
 		view->frame_w = b.width;
-		view->frame_h = b.height;
-		view->frame_scale = scale;
-		view->frame_dirty = false;
-		view->frame_focused = focused;
-		view->corner_x = INT32_MIN; /* corners are redrawn below */
 	}
+	view->frame_dirty = false;
 
 	int r = deco_radius();
 	int pos[4][2] = { {0, 0}, {b.width - r, 0}, {b.width - r, b.height - r}, {0, b.height - r} };
 
-	/* Corners show what is behind the window, so with a wallpaper they are
-	 * redrawn whenever the window moves. */
+	/* Without a wallpaper the corners are shared images. With one they show
+	 * the part of it behind them, so they follow the window; while a divider
+	 * is being dragged they are hidden and drawn once it is let go. */
 	struct ts_output *output = view->output;
 	bool has_wallpaper = output && output->wallpaper_surface;
-	if (view->corner_x == INT32_MIN || view->corners[0]->buffer == NULL ||
-			(has_wallpaper && (view->corner_x != b.x || view->corner_y != b.y))) {
+	bool stale = view->corners_dirty || restyle || view->corners[0]->buffer == NULL ||
+		(has_wallpaper && !wlr_box_equal(&view->corner_box, &b));
+	bool hide_corners = false;
+	if (stale && has_wallpaper && server->cursor_mode == TS_CURSOR_RATIO) {
+		hide_corners = true;
+	} else if (stale) {
 		for (int i = 0; i < 4; i++) {
-			double ox = 0, oy = 0;
-			if (output) {
-				ox = b.x + pos[i][0] - output->full_area.x;
-				oy = b.y + pos[i][1] - output->full_area.y;
+			if (has_wallpaper) {
+				double ox = b.x + pos[i][0] - output->full_area.x;
+				double oy = b.y + pos[i][1] - output->full_area.y;
+				struct wlr_buffer *cbuf = deco_render_corner(server, i, scale, focused,
+					output, ox, oy);
+				if (cbuf) {
+					wlr_scene_buffer_set_buffer(view->corners[i], cbuf);
+					wlr_buffer_drop(cbuf);
+				}
+			} else {
+				wlr_scene_buffer_set_buffer(view->corners[i],
+					deco_shared_corner(server, i, scale, focused));
 			}
-			struct wlr_buffer *cbuf = deco_render_corner(server, i, scale, focused, output, ox, oy);
-			if (cbuf) {
-				wlr_scene_buffer_set_buffer(view->corners[i], cbuf);
-				wlr_scene_buffer_set_dest_size(view->corners[i], r, r);
-				wlr_buffer_drop(cbuf);
-			}
+			wlr_scene_buffer_set_dest_size(view->corners[i], r, r);
 		}
-		view->corner_x = b.x;
-		view->corner_y = b.y;
+		view->corner_box = b;
+		view->corners_dirty = false;
 	}
+	view->frame_focused = focused;
+	view->frame_scale = scale;
 	for (int i = 0; i < 4; i++) {
 		bool top = i < 2;
-		bool enabled = !view->floating && !(top && view->ssd);
+		bool enabled = !hide_corners && !view->floating && !(top && view->ssd);
 		wlr_scene_node_set_enabled(&view->corners[i]->node, enabled);
 		wlr_scene_node_set_position(&view->corners[i]->node, pos[i][0], pos[i][1]);
 	}
@@ -271,6 +312,7 @@ void views_redraw_frames(struct ts_server *server) {
 	struct ts_view *view;
 	wl_list_for_each(view, &server->views, link) {
 		view->frame_dirty = true;
+		view->corners_dirty = true;
 		view_update_frame(view);
 	}
 }
@@ -525,7 +567,13 @@ struct ts_view *view_create_common(struct ts_server *server, enum ts_view_type t
 	float black[4] = {0, 0, 0, 1};
 	view->fs_bg = wlr_scene_rect_create(view->tree, 1, 1, black);
 	wlr_scene_node_set_enabled(&view->fs_bg->node, false);
-	view->frame = wlr_scene_buffer_create(view->tree, NULL);
+	view->frame = wlr_scene_tree_create(view->tree);
+	view->frame_bg = wlr_scene_rect_create(view->frame, 1, 1, black);
+	for (int i = 0; i < 4; i++) {
+		view->edges[i] = wlr_scene_rect_create(view->frame, 1, 1, black);
+		wlr_scene_node_set_enabled(&view->edges[i]->node, false);
+	}
+	view->titlebar = wlr_scene_buffer_create(view->frame, NULL);
 	view->content_tree = wlr_scene_tree_create(view->tree);
 	for (int i = 0; i < 4; i++) {
 		view->corners[i] = wlr_scene_buffer_create(view->tree, NULL);
@@ -534,6 +582,7 @@ struct ts_view *view_create_common(struct ts_server *server, enum ts_view_type t
 	view->popup_tree = wlr_scene_tree_create(server->layer_popups);
 	view->popup_tree->node.data = &view->node;
 	view->frame_dirty = true;
+	view->corners_dirty = true;
 	view->workspace = 1;
 	wl_list_init(&view->link);
 	wl_list_init(&view->focus_link);

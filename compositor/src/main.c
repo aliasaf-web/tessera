@@ -293,6 +293,7 @@ int main(int argc, char *argv[]) {
 	/* Screens and input devices go first: their clean-up still uses the scene. */
 	wlr_backend_destroy(server.backend);
 	wlr_scene_node_destroy(&server.scene->tree.node);
+	deco_forget_corners(&server);
 	wlr_xcursor_manager_destroy(server.cursor_mgr);
 	wlr_cursor_destroy(server.cursor);
 	wlr_allocator_destroy(server.allocator);

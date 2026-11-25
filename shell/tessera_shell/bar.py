@@ -28,6 +28,7 @@ class Bar:
         apps = button(icon("view-app-grid-symbolic", 18), css="round",
                       tooltip="All apps  (Super)", on_click=shell.toggle_launcher)
         self.ws_box = hbox(0)
+        self._ws_key = None  # what the dots last showed
         self.ws_box.add_css_class("pill")
         self.ws_box.add_css_class("workspaces")
         self.ws_box.set_valign(Gtk.Align.FILL)
@@ -134,10 +135,16 @@ class Bar:
             self.status.remove_css_class("open")
 
     def update_workspaces(self, state):
-        clear(self.ws_box)
         current = state.get("workspace", 1)
         occupied = set(state.get("occupied", []))
         urgent = set(state.get("urgent", []))
+        # Most state messages (a window title changed, and so on) leave the
+        # dots as they are.
+        key = (current, frozenset(occupied), frozenset(urgent))
+        if key == self._ws_key:
+            return
+        self._ws_key = key
+        clear(self.ws_box)
         count = max([3, current] + list(occupied))
         for i in range(1, count + 1):
             dot = Gtk.Button()

@@ -17,7 +17,22 @@
 
 static int current_layout(struct ts_server *server);
 
-static void lock_redraw(struct ts_server *server) {
+/* What lock_redraw draws again. */
+enum {
+	REDRAW_BACKDROP = 1 << 0,
+	REDRAW_CLOCK = 1 << 1,
+	REDRAW_FIELD = 1 << 2,
+	REDRAW_BUTTONS = 1 << 3,
+	REDRAW_ALL = REDRAW_BACKDROP | REDRAW_CLOCK | REDRAW_FIELD | REDRAW_BUTTONS,
+};
+
+static const int part_flags[TS_LOCK_PART_COUNT] = {
+	[TS_LOCK_PART_CLOCK] = REDRAW_CLOCK,
+	[TS_LOCK_PART_FIELD] = REDRAW_FIELD,
+	[TS_LOCK_PART_BUTTONS] = REDRAW_BUTTONS,
+};
+
+static void lock_redraw(struct ts_server *server, int what) {
 	struct ts_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
 		struct ts_lock_surface *ls = output->lock_surface;
@@ -25,14 +40,38 @@ static void lock_redraw(struct ts_server *server) {
 			continue;
 		}
 		struct wlr_box area = output->full_area;
-		struct wlr_buffer *buf = deco_render_lock(server, output, area.width, area.height,
-			output->wlr_output->scale);
-		if (buf) {
-			wlr_scene_buffer_set_buffer(ls->buffer, buf);
-			wlr_scene_buffer_set_dest_size(ls->buffer, area.width, area.height);
-			wlr_buffer_drop(buf);
-		}
+		double scale = output->wlr_output->scale;
 		wlr_scene_node_set_position(&ls->tree->node, area.x, area.y);
+		if (what & REDRAW_BACKDROP) {
+			/* A plain colour needs no image; a wallpaper is drawn once here. */
+			struct ts_color bg = server->theme.background;
+			float color[4] = { bg.r, bg.g, bg.b, 1.0f };
+			wlr_scene_rect_set_color(ls->backdrop, color);
+			wlr_scene_rect_set_size(ls->backdrop, area.width, area.height);
+			struct wlr_buffer *buf = NULL;
+			if (output->wallpaper_surface) {
+				buf = deco_render_lock_backdrop(server, output, area.width, area.height, scale);
+			}
+			wlr_scene_buffer_set_buffer(ls->wallpaper, buf);
+			if (buf) {
+				wlr_scene_buffer_set_dest_size(ls->wallpaper, area.width, area.height);
+				wlr_buffer_drop(buf);
+			}
+		}
+		for (int part = 0; part < TS_LOCK_PART_COUNT; part++) {
+			if (!(what & part_flags[part])) {
+				continue;
+			}
+			struct wlr_box box;
+			struct wlr_buffer *buf = deco_render_lock_part(server, output, part,
+				area.width, area.height, scale, &box);
+			if (buf) {
+				wlr_scene_buffer_set_buffer(ls->parts[part], buf);
+				wlr_scene_buffer_set_dest_size(ls->parts[part], box.width, box.height);
+				wlr_scene_node_set_position(&ls->parts[part]->node, box.x, box.y);
+				wlr_buffer_drop(buf);
+			}
+		}
 	}
 }
 
@@ -52,11 +91,16 @@ void lock_arrange(struct ts_server *server) {
 			ls->output = output;
 			ls->tree = wlr_scene_tree_create(server->layer_lock);
 			ls->tree->node.data = &ls->node;
-			ls->buffer = wlr_scene_buffer_create(ls->tree, NULL);
+			float black[4] = {0, 0, 0, 1};
+			ls->backdrop = wlr_scene_rect_create(ls->tree, 1, 1, black);
+			ls->wallpaper = wlr_scene_buffer_create(ls->tree, NULL);
+			for (int part = 0; part < TS_LOCK_PART_COUNT; part++) {
+				ls->parts[part] = wlr_scene_buffer_create(ls->tree, NULL);
+			}
 			output->lock_surface = ls;
 		}
 	}
-	lock_redraw(server);
+	lock_redraw(server, REDRAW_ALL);
 }
 
 void lock_output_destroyed(struct ts_output *output) {
@@ -70,7 +114,7 @@ void lock_output_destroyed(struct ts_output *output) {
 static int clock_tick(void *data) {
 	struct ts_server *server = data;
 	if (server->locked) {
-		lock_redraw(server);
+		lock_redraw(server, REDRAW_CLOCK);
 	}
 	wl_event_source_timer_update(server->clock_timer, 15000);
 	return 0;
@@ -210,7 +254,7 @@ static int wait_tick(void *data) {
 	if (server->auth_wait > 0) {
 		wl_event_source_timer_update(server->auth_wait_timer, 1000);
 	}
-	lock_redraw(server);
+	lock_redraw(server, REDRAW_FIELD);
 	return 0;
 }
 
@@ -236,7 +280,7 @@ static int auth_done(int fd, uint32_t mask, void *data) {
 		if (server->auth_wait > 0) {
 			wl_event_source_timer_update(server->auth_wait_timer, 1000);
 		}
-		lock_redraw(server);
+		lock_redraw(server, REDRAW_FIELD);
 	}
 	return 0;
 }
@@ -288,7 +332,7 @@ static void start_auth(struct ts_server *server) {
 	server->auth_failed = false;
 	server->auth_source = wl_event_loop_add_fd(server->loop, out[0],
 		WL_EVENT_READABLE | WL_EVENT_HANGUP, auth_done, server);
-	lock_redraw(server);
+	lock_redraw(server, REDRAW_FIELD);
 }
 
 static void remove_last_utf8(struct ts_server *server) {
@@ -337,7 +381,7 @@ static void disarm(struct ts_server *server) {
 	if (server->lock_armed != TS_LOCK_BUTTON_NONE) {
 		server->lock_armed = TS_LOCK_BUTTON_NONE;
 		wl_event_source_timer_update(server->lock_arm_timer, 0);
-		lock_redraw(server);
+		lock_redraw(server, REDRAW_FIELD | REDRAW_BUTTONS);
 	}
 }
 
@@ -357,7 +401,7 @@ static void press_button(struct ts_server *server, enum ts_lock_button button) {
 	if (server->lock_armed != button) {
 		server->lock_armed = button;
 		wl_event_source_timer_update(server->lock_arm_timer, 5000);
-		lock_redraw(server);
+		lock_redraw(server, REDRAW_FIELD | REDRAW_BUTTONS);
 		return;
 	}
 	disarm(server);
@@ -384,7 +428,7 @@ void lock_handle_motion(struct ts_server *server, double lx, double ly) {
 	enum ts_lock_button hover = button_at(server, lx, ly);
 	if (hover != server->lock_hover) {
 		server->lock_hover = hover;
-		lock_redraw(server);
+		lock_redraw(server, REDRAW_BUTTONS);
 	}
 }
 
@@ -445,7 +489,7 @@ void lock_keyboard_changed(struct ts_server *server) {
 	if (caps != server->lock_caps || layout != server->lock_layout) {
 		server->lock_caps = caps;
 		server->lock_layout = layout;
-		lock_redraw(server);
+		lock_redraw(server, REDRAW_FIELD);
 	}
 }
 
@@ -481,7 +525,7 @@ bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepo
 			return true;
 		}
 	}
-	lock_redraw(server);
+	lock_redraw(server, REDRAW_FIELD);
 	return true;
 }
 

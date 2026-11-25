@@ -149,7 +149,10 @@ struct ts_view {
 	struct wlr_surface *surface; /* main surface, valid while mapped */
 
 	struct wlr_scene_tree *tree;         /* outer container */
-	struct wlr_scene_buffer *frame;      /* title bar + outline */
+	struct wlr_scene_tree *frame;        /* background, outline and title bar */
+	struct wlr_scene_rect *frame_bg;     /* behind the window contents */
+	struct wlr_scene_rect *edges[4];     /* outline: top, right, bottom, left */
+	struct wlr_scene_buffer *titlebar;   /* title and close button */
 	struct wlr_scene_tree *content_tree; /* client surfaces */
 	struct wlr_scene_buffer *corners[4]; /* rounded corner masks */
 	struct wlr_scene_tree *popup_tree;   /* xdg popups, kept above windows */
@@ -162,15 +165,16 @@ struct ts_view {
 	bool floating;
 	bool fullscreen;
 	bool maximized;
-	bool ssd;         /* we draw the title bar */
-	bool frame_dirty;
+	bool ssd;           /* we draw the title bar */
+	bool frame_dirty;   /* title bar needs drawing again */
+	bool corners_dirty; /* corners need drawing again */
 	bool urgent;
 
 	struct wlr_box box;        /* outer box in layout coords */
 	struct wlr_box float_box;  /* remembered floating position */
 	struct wlr_box content;    /* content box relative to box */
-	int frame_w, frame_h, frame_focused, frame_hover_close;
-	int corner_x, corner_y;
+	int frame_w, frame_focused, frame_hover_close;
+	struct wlr_box corner_box; /* where the corners were drawn for */
 	double frame_scale;
 
 	struct wlr_xdg_toplevel_decoration_v1 *decoration;
@@ -238,11 +242,21 @@ struct ts_keyboard {
 	struct wl_listener destroy;
 };
 
+/* The lock screen's parts that are drawn as images. */
+enum ts_lock_part {
+	TS_LOCK_PART_CLOCK,
+	TS_LOCK_PART_FIELD,   /* password field, message and keyboard notes */
+	TS_LOCK_PART_BUTTONS,
+	TS_LOCK_PART_COUNT,
+};
+
 struct ts_lock_surface {
 	struct ts_node node;
 	struct ts_output *output;
 	struct wlr_scene_tree *tree;
-	struct wlr_scene_buffer *buffer;
+	struct wlr_scene_rect *backdrop;     /* plain colour under everything */
+	struct wlr_scene_buffer *wallpaper;  /* dimmed wallpaper, if there is one */
+	struct wlr_scene_buffer *parts[TS_LOCK_PART_COUNT];
 };
 
 /* Longest request line, including its newline. */
@@ -254,6 +268,7 @@ struct ts_ipc_client {
 	int fd;
 	struct wl_event_source *source;
 	bool subscribed;
+	uint64_t state_hash; /* the state it was last sent */
 	bool discarding; /* skipping the rest of a request that was too long */
 	char buf[TS_IPC_LINE_MAX];
 	size_t len;
@@ -438,6 +453,10 @@ struct ts_server {
 
 	struct ts_config config;
 	struct ts_theme theme;
+	/* Without a wallpaper every window's rounded corners look the same, so
+	 * they are drawn once: [focused][corner], for corner_cache_scale. */
+	struct wlr_buffer *corner_cache[2][4];
+	double corner_cache_scale;
 	const char *socket_name; /* owned by the display */
 };
 
@@ -520,12 +539,19 @@ bool view_is_hidden(struct ts_view *view);
 void input_cancel_grab(struct ts_server *server);
 
 /* deco.c */
-struct wlr_buffer *deco_render_frame(struct ts_server *server, int w, int h, double scale,
-	const char *title, bool focused, bool ssd, bool hover_close, bool floating);
+struct wlr_buffer *deco_render_titlebar(struct ts_server *server, int w, double scale,
+	const char *title, bool focused, bool hover_close, bool floating);
+struct ts_color deco_outline_color(struct ts_server *server, bool focused, bool floating,
+	int *width);
 struct wlr_buffer *deco_render_corner(struct ts_server *server, int corner, double scale,
 	bool focused, struct ts_output *output, double ox, double oy);
-struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *output,
+struct wlr_buffer *deco_shared_corner(struct ts_server *server, int corner, double scale,
+	bool focused);
+void deco_forget_corners(struct ts_server *server);
+struct wlr_buffer *deco_render_lock_backdrop(struct ts_server *server, struct ts_output *output,
 	int w, int h, double scale);
+struct wlr_buffer *deco_render_lock_part(struct ts_server *server, struct ts_output *output,
+	enum ts_lock_part part, int w, int h, double scale, struct wlr_box *box);
 struct wlr_buffer *deco_buffer_from_surface(void *cairo_surface);
 int deco_titlebar_height(void);
 int deco_border(void);

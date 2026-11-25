@@ -796,10 +796,14 @@ static void end_grab(struct ts_server *server) {
 			view_focus(view);
 		}
 	}
+	struct ts_output *ratio_output = server->ratio_output;
 	server->cursor_mode = TS_CURSOR_PASSTHROUGH;
 	server->grab_view = NULL;
 	server->ratio_output = NULL;
 	server->cursor_image = NULL;
+	if (ratio_output) {
+		arrange_output(ratio_output); /* draws the corners hidden during the drag */
+	}
 	cursor_rebase(server);
 }
 
@@ -809,10 +813,14 @@ void input_cancel_grab(struct ts_server *server) {
 		return;
 	}
 	update_drop_hint(server, NULL);
+	struct ts_output *ratio_output = server->ratio_output;
 	server->cursor_mode = TS_CURSOR_PASSTHROUGH;
 	server->grab_view = NULL;
 	server->ratio_output = NULL;
 	server->cursor_image = NULL;
+	if (ratio_output) {
+		arrange_output(ratio_output); /* draws the corners hidden during the drag */
+	}
 }
 
 void input_view_gone(struct ts_view *view) {

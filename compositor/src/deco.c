@@ -185,9 +185,38 @@ static struct ts_color subtle_border(struct ts_server *server) {
 		: (struct ts_color){0, 0, 0, 0.10f};
 }
 
-struct wlr_buffer *deco_render_frame(struct ts_server *server, int w, int h, double scale,
-		const char *title, bool focused, bool ssd, bool hover_close, bool floating) {
+/* The outline: 2 px of the accent colour around the focused window; a faint
+ * 1 px line around others in the light theme and around floating windows;
+ * otherwise none (width 0). */
+struct ts_color deco_outline_color(struct ts_server *server, bool focused, bool floating,
+		int *width) {
+	if (focused) {
+		*width = 2;
+		return server->theme.accent;
+	}
+	if (!server->theme.dark || floating) {
+		*width = 1;
+		return subtle_border(server);
+	}
+	*width = 0;
+	return (struct ts_color){0, 0, 0, 0};
+}
+
+/* Left side up, round over the top, right side down; open at the bottom so it
+ * joins the outline drawn below the title bar. */
+static void rounded_top_path(cairo_t *cr, double inset, double w, double h) {
+	cairo_move_to(cr, inset, h);
+	cairo_arc(cr, RADIUS, RADIUS, RADIUS - inset, M_PI, 3 * M_PI / 2);
+	cairo_arc(cr, w - RADIUS, RADIUS, RADIUS - inset, 3 * M_PI / 2, 2 * M_PI);
+	cairo_line_to(cr, w - inset, h);
+}
+
+/* Only the title bar strip is an image; the rest of the frame is plain
+ * rectangles, so resizing and focus changes stay cheap. */
+struct wlr_buffer *deco_render_titlebar(struct ts_server *server, int w, double scale,
+		const char *title, bool focused, bool hover_close, bool floating) {
 	struct ts_theme *t = &server->theme;
+	const int h = TITLEBAR_HEIGHT;
 	struct cairo_buffer *buffer = cairo_buffer_create(ceil(w * scale), ceil(h * scale));
 	if (buffer == NULL) {
 		return NULL;
@@ -196,42 +225,38 @@ struct wlr_buffer *deco_render_frame(struct ts_server *server, int w, int h, dou
 	cairo_scale(cr, scale, scale);
 	cairo_set_antialias(cr, CAIRO_ANTIALIAS_BEST);
 
-	rounded_rect(cr, 0, 0, w, h, RADIUS);
+	rounded_top_path(cr, 0, w, h);
+	cairo_close_path(cr);
 	set_color(cr, t->surface);
 	cairo_fill(cr);
 
-	if (ssd) {
-		double max_title = w - 16 - (CLOSE_MARGIN + 2 * CLOSE_RADIUS) - 12;
-		draw_text(cr, title, "Inter, sans-serif", 13, focused ? 560 : 500, 16,
-			TITLEBAR_HEIGHT / 2.0, max_title, focused ? t->text : t->text_dim,
-			false, NULL, NULL);
+	double max_title = w - 16 - (CLOSE_MARGIN + 2 * CLOSE_RADIUS) - 12;
+	draw_text(cr, title, "Inter, sans-serif", 13, focused ? 560 : 500, 16, h / 2.0,
+		max_title, focused ? t->text : t->text_dim, false, NULL, NULL);
 
-		double cx = close_cx(w), cy = TITLEBAR_HEIGHT / 2.0;
-		if (hover_close) {
-			cairo_arc(cr, cx, cy, CLOSE_RADIUS, 0, 2 * M_PI);
-			set_color(cr, t->surface_hover);
-			cairo_fill(cr);
-		}
-		double s = 4.5;
-		cairo_set_line_width(cr, 1.7);
-		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-		set_color(cr, hover_close || focused ? t->text : t->text_dim);
-		cairo_move_to(cr, cx - s, cy - s);
-		cairo_line_to(cr, cx + s, cy + s);
-		cairo_move_to(cr, cx + s, cy - s);
-		cairo_line_to(cr, cx - s, cy + s);
-		cairo_stroke(cr);
+	double cx = close_cx(w), cy = h / 2.0;
+	if (hover_close) {
+		cairo_arc(cr, cx, cy, CLOSE_RADIUS, 0, 2 * M_PI);
+		set_color(cr, t->surface_hover);
+		cairo_fill(cr);
 	}
+	double s = 4.5;
+	cairo_set_line_width(cr, 1.7);
+	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+	set_color(cr, hover_close || focused ? t->text : t->text_dim);
+	cairo_move_to(cr, cx - s, cy - s);
+	cairo_line_to(cr, cx + s, cy + s);
+	cairo_move_to(cr, cx + s, cy - s);
+	cairo_line_to(cr, cx - s, cy + s);
+	cairo_stroke(cr);
 
-	if (focused) {
-		rounded_rect(cr, 1, 1, w - 2, h - 2, RADIUS - 1);
-		set_color(cr, t->accent);
-		cairo_set_line_width(cr, 2);
-		cairo_stroke(cr);
-	} else if (!t->dark || floating) {
-		rounded_rect(cr, 0.5, 0.5, w - 1, h - 1, RADIUS - 0.5);
-		set_color(cr, subtle_border(server));
-		cairo_set_line_width(cr, 1);
+	int width;
+	struct ts_color outline = deco_outline_color(server, focused, floating, &width);
+	if (width > 0) {
+		rounded_top_path(cr, width / 2.0, w, h);
+		set_color(cr, outline);
+		cairo_set_line_width(cr, width);
+		cairo_set_line_cap(cr, CAIRO_LINE_CAP_BUTT);
 		cairo_stroke(cr);
 	}
 
@@ -240,10 +265,6 @@ struct wlr_buffer *deco_render_frame(struct ts_server *server, int w, int h, dou
 	return &buffer->base;
 }
 
-/* Corner masks sit on top of the window contents and paint the desktop
- * colour outside a quarter circle, which gives windows rounded corners
- * without any expensive clipping. corner: 0 top-left, 1 top-right,
- * 2 bottom-right, 3 bottom-left. */
 /* Paint what lies behind a window at this spot: the wallpaper if there is
  * one, otherwise the desktop colour. ox/oy are the spot's position on the
  * screen in logical pixels. */
@@ -306,6 +327,34 @@ struct wlr_buffer *deco_render_corner(struct ts_server *server, int corner, doub
 	return &buffer->base;
 }
 
+/* Without a wallpaper the corners are the same on every window, so each look
+ * is drawn once and shared. The cache keeps its own reference. */
+struct wlr_buffer *deco_shared_corner(struct ts_server *server, int corner, double scale,
+		bool focused) {
+	if (server->corner_cache_scale != scale) {
+		deco_forget_corners(server);
+		server->corner_cache_scale = scale;
+	}
+	struct wlr_buffer **slot = &server->corner_cache[focused][corner];
+	if (*slot == NULL) {
+		*slot = deco_render_corner(server, corner, scale, focused, NULL, 0, 0);
+	}
+	return *slot;
+}
+
+/* Called when the theme changes, and on exit. */
+void deco_forget_corners(struct ts_server *server) {
+	for (int f = 0; f < 2; f++) {
+		for (int i = 0; i < 4; i++) {
+			if (server->corner_cache[f][i]) {
+				wlr_buffer_drop(server->corner_cache[f][i]);
+				server->corner_cache[f][i] = NULL;
+			}
+		}
+	}
+	server->corner_cache_scale = 0;
+}
+
 static const char *display_name(void) {
 	static char name[128];
 	struct passwd *pw = getpwuid(getuid());
@@ -326,7 +375,11 @@ static const char *display_name(void) {
 	return name;
 }
 
-struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *output,
+/* The lock screen is drawn in parts, so typing only redraws the password
+ * area and the clock only its strip. Each part is drawn in screen
+ * coordinates (logical pixels) and placed at the box it returns. */
+
+struct wlr_buffer *deco_render_lock_backdrop(struct ts_server *server, struct ts_output *output,
 		int w, int h, double scale) {
 	struct ts_theme *t = &server->theme;
 	struct cairo_buffer *buffer = cairo_buffer_create(ceil(w * scale), ceil(h * scale));
@@ -335,35 +388,35 @@ struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *
 	}
 	cairo_t *cr = cairo_create(buffer->surface);
 	cairo_scale(cr, scale, scale);
-	cairo_set_antialias(cr, CAIRO_ANTIALIAS_BEST);
-
 	set_color(cr, t->background);
 	cairo_paint(cr);
-	if (output && output->wallpaper_surface) {
-		/* The wallpaper, dimmed so the text stays easy to read. */
-		paint_backdrop(cr, server, output, 0, 0, scale);
-		cairo_paint(cr);
-		cairo_set_source_rgba(cr, t->background.r, t->background.g, t->background.b, 0.78);
-		cairo_paint(cr);
-	}
+	/* The wallpaper, dimmed so the text stays easy to read. */
+	paint_backdrop(cr, server, output, 0, 0, scale);
+	cairo_paint(cr);
+	cairo_set_source_rgba(cr, t->background.r, t->background.g, t->background.b, 0.78);
+	cairo_paint(cr);
+	cairo_destroy(cr);
+	cairo_surface_flush(buffer->surface);
+	return &buffer->base;
+}
 
+static void draw_lock_clock(cairo_t *cr, struct ts_theme *t, double cx, double cy) {
 	time_t now = time(NULL);
 	struct tm tm;
 	localtime_r(&now, &tm);
 	char clock_text[32], date_text[64];
 	strftime(clock_text, sizeof(clock_text), "%H:%M", &tm);
 	strftime(date_text, sizeof(date_text), "%A %-d %B", &tm);
-
-	double cx = w / 2.0;
-	double cy = h / 2.0 - 70;
 	draw_text(cr, clock_text, "Inter, sans-serif", 96, 300, cx, cy, 0, t->text,
 		true, NULL, NULL);
 	draw_text(cr, date_text, "Inter, sans-serif", 20, 400, cx, cy + 74, 0, t->text_dim,
 		true, NULL, NULL);
+}
 
-	/* Password field */
-	double fw = 340, fh = 52;
-	double fx = cx - fw / 2, fy = cy + 130;
+static void draw_lock_field(cairo_t *cr, struct ts_server *server, double cx, double fy,
+		double fw, double fh, double text_w) {
+	struct ts_theme *t = &server->theme;
+	double fx = cx - fw / 2;
 	rounded_rect(cr, fx, fy, fw, fh, fh / 2);
 	set_color(cr, t->surface);
 	cairo_fill_preserve(cr);
@@ -407,7 +460,7 @@ struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *
 		hint = "That password didn't work. Please try again.";
 		hint_color = t->accent;
 	}
-	draw_text(cr, hint, "Inter, sans-serif", 14, 400, cx, fy + fh + 30, w - 40,
+	draw_text(cr, hint, "Inter, sans-serif", 14, 400, cx, fy + fh + 30, text_w,
 		hint_color, true, NULL, NULL);
 
 	/* Caps Lock, and the keyboard layout when there is more than one. */
@@ -421,17 +474,22 @@ struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *
 	if (layout) {
 		char note[160];
 		snprintf(note, sizeof(note), "Keyboard: %s", layout);
-		draw_text(cr, note, "Inter, sans-serif", 13, 400, cx, note_y, w - 40, t->text_dim,
+		draw_text(cr, note, "Inter, sans-serif", 13, 400, cx, note_y, text_w, t->text_dim,
 			true, NULL, NULL);
 	}
+}
 
-	/* Sleep, Restart and Shut down along the bottom. */
+/* Sleep, Restart and Shut down along the bottom; also records where they
+ * are, for clicks. */
+static void draw_lock_buttons(cairo_t *cr, struct ts_server *server, struct ts_output *output,
+		double cx, double by, double bh) {
+	struct ts_theme *t = &server->theme;
 	static const char *const labels[TS_LOCK_BUTTON_COUNT] = {
 		[TS_LOCK_BUTTON_SLEEP] = "Sleep",
 		[TS_LOCK_BUTTON_RESTART] = "Restart",
 		[TS_LOCK_BUTTON_SHUT_DOWN] = "Shut down",
 	};
-	const double bh = 36, pad = 18, gap = 10;
+	const double pad = 18, gap = 10;
 	double widths[TS_LOCK_BUTTON_COUNT] = {0}, total = 0;
 	for (int i = TS_LOCK_BUTTON_NONE + 1; i < TS_LOCK_BUTTON_COUNT; i++) {
 		double tw;
@@ -439,7 +497,7 @@ struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *
 		widths[i] = tw + 2 * pad;
 		total += widths[i] + (i > TS_LOCK_BUTTON_NONE + 1 ? gap : 0);
 	}
-	double bx = cx - total / 2, by = h - 28 - bh;
+	double bx = cx - total / 2;
 	for (int i = TS_LOCK_BUTTON_NONE + 1; i < TS_LOCK_BUTTON_COUNT; i++) {
 		bool armed = server->lock_armed == (enum ts_lock_button)i;
 		bool hover = server->lock_hover == (enum ts_lock_button)i;
@@ -448,11 +506,54 @@ struct wlr_buffer *deco_render_lock(struct ts_server *server, struct ts_output *
 		cairo_fill(cr);
 		draw_text(cr, labels[i], "Inter, sans-serif", 13, 500, bx + widths[i] / 2,
 			by + bh / 2, 0, armed ? t->on_accent : t->text, true, NULL, NULL);
-		if (output) {
-			output->lock_buttons[i] = (struct wlr_box){
-				(int)bx, (int)by, (int)widths[i], (int)bh };
-		}
+		output->lock_buttons[i] = (struct wlr_box){
+			(int)bx, (int)by, (int)widths[i], (int)bh };
 		bx += widths[i] + gap;
+	}
+}
+
+struct wlr_buffer *deco_render_lock_part(struct ts_server *server, struct ts_output *output,
+		enum ts_lock_part part, int w, int h, double scale, struct wlr_box *box) {
+	double cx = w / 2.0;
+	double cy = h / 2.0 - 70;           /* middle of the clock */
+	const double fw = 340, fh = 52;     /* password field */
+	double fy = cy + 130;
+	const double bh = 36;               /* buttons */
+	double by = h - 28 - bh;
+	int area_w = MIN(w, 640);           /* password field, message and notes */
+
+	switch (part) {
+	case TS_LOCK_PART_CLOCK:
+		*box = (struct wlr_box){ 0, (int)floor(cy - 70), w, 170 };
+		break;
+	case TS_LOCK_PART_FIELD:
+		*box = (struct wlr_box){ (int)floor(cx - area_w / 2.0), (int)floor(fy - 2), area_w,
+			(int)fh + 96 };
+		break;
+	default:
+		*box = (struct wlr_box){ 0, (int)floor(by), w, (int)bh + 1 };
+		break;
+	}
+	struct cairo_buffer *buffer = cairo_buffer_create(ceil(box->width * scale),
+		ceil(box->height * scale));
+	if (buffer == NULL) {
+		return NULL;
+	}
+	cairo_t *cr = cairo_create(buffer->surface);
+	cairo_scale(cr, scale, scale);
+	cairo_translate(cr, -box->x, -box->y);
+	cairo_set_antialias(cr, CAIRO_ANTIALIAS_BEST);
+
+	switch (part) {
+	case TS_LOCK_PART_CLOCK:
+		draw_lock_clock(cr, &server->theme, cx, cy);
+		break;
+	case TS_LOCK_PART_FIELD:
+		draw_lock_field(cr, server, cx, fy, fw, fh, area_w - 20);
+		break;
+	default:
+		draw_lock_buttons(cr, server, output, cx, by, bh);
+		break;
 	}
 
 	cairo_destroy(cr);

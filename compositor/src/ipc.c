@@ -169,18 +169,39 @@ static void state_json(struct ts_server *server, char *buf, size_t size) {
 		output && output_is_compact(output) ? "true" : "false");
 }
 
+/* FNV-1a: tells whether a client already has this exact state. */
+static uint64_t text_hash(const char *text) {
+	uint64_t hash = 1469598103934665603ULL;
+	for (; *text; text++) {
+		hash ^= (unsigned char)*text;
+		hash *= 1099511628211ULL;
+	}
+	return hash;
+}
+
+/* Many changes leave the state as it was (a window that isn't focused gets
+ * a new title, the same window is focused again); only real changes are
+ * sent. */
 void ipc_send_state(struct ts_server *server) {
 	if (wl_list_empty(&server->ipc_clients)) {
 		return;
 	}
 	char buf[1024];
 	state_json(server, buf, sizeof(buf));
-	ipc_broadcast(server, buf);
+	uint64_t hash = text_hash(buf);
+	struct ts_ipc_client *client, *tmp;
+	wl_list_for_each_safe(client, tmp, &server->ipc_clients, link) {
+		if (client->subscribed && client->state_hash != hash) {
+			client->state_hash = hash;
+			client_write(client, buf);
+		}
+	}
 }
 
 void config_reload(struct ts_server *server) {
 	config_load(server);
 	theme_from_config(server);
+	deco_forget_corners(server);
 	keyboard_apply_config(server);
 	pointers_apply_config(server);
 	outputs_apply_config(server);
@@ -218,6 +239,7 @@ static void handle_command(struct ts_ipc_client *client, char *line) {
 		client->subscribed = true;
 		char buf[1024];
 		state_json(server, buf, sizeof(buf));
+		client->state_hash = text_hash(buf);
 		client_write(client, buf);
 		return;
 	} else if (strcmp(line, "state") == 0) {

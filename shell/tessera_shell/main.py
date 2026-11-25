@@ -146,7 +146,7 @@ class Shell:
     def on_event(self, event):
         kind = event.get("event")
         if kind == "state":
-            self.state = event
+            previous, self.state = self.state, event
             for bar in self.bars.values():
                 bar.update_workspaces(event)
             if event.get("locked"):
@@ -156,7 +156,8 @@ class Shell:
             if self._welcome_pending and not event.get("locked"):
                 self._welcome_pending = False
                 GLib.timeout_add(800, lambda: (self.help.show(self.current_monitor()), False)[1])
-            self.quick_settings.update_theme()
+            if event.get("night_light") != previous.get("night_light"):
+                self.quick_settings.update_theme()
         elif kind == "reload":
             self.reload()
         elif kind == "switcher":
