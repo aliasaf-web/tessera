@@ -112,6 +112,11 @@ laptop brings back the lock screen.
 Wi-Fi, Bluetooth, volume, brightness, dark mode, night light, **Sleep**,
 **Restart** and **Shut down** are all in quick settings (click the clock).
 
+To add a Bluetooth device, click the arrow next to Bluetooth, then **Look for new
+devices**, and click the device's name. If pairing needs a code, quick settings
+shows it there: check that it matches, type it on the device, or type the code
+the device shows.
+
 The dots at the bottom left show your workspaces: the long one is where you are.
 Click a dot, or scroll over them, to move between workspaces. A dot in your
 highlight colour means a window there needs you (for example, it opened a

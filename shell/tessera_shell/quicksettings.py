@@ -2,7 +2,7 @@
 
 import time
 
-from gi.repository import Gtk
+from gi.repository import GLib, Gtk
 
 from . import ipc, services
 from .theme import write_config_value
@@ -122,7 +122,7 @@ class QuickSettings:
 
     def _header(self, title, switch_cb=None):
         back = button(icon("go-previous-symbolic"), css="icon", tooltip="Back",
-                      on_click=lambda: self.stack.set_visible_child_name("main"))
+                      on_click=lambda: self.open_page("main"))
         title_lbl = label(title, "title")
         title_lbl.set_hexpand(True)
         row = hbox(12, back, title_lbl)
@@ -152,7 +152,7 @@ class QuickSettings:
         head.append(button(icon("system-lock-screen-symbolic"), css="icon", tooltip="Lock",
                            on_click=self.lock))
         head.append(button(icon("system-shutdown-symbolic"), css="icon", tooltip="Power",
-                           on_click=lambda: self.stack.set_visible_child_name("power")))
+                           on_click=lambda: self.open_page("power")))
         page.append(head)
 
         grid = Gtk.Grid()
@@ -222,6 +222,12 @@ class QuickSettings:
         page.append(header)
         self.bt_status = label("", "dim", wrap=True)
         page.append(self.bt_status)
+        # Shown while pairing: the code to check or type.
+        self.bt_prompt = vbox(10)
+        self.bt_prompt.add_css_class("prompt")
+        self.bt_prompt.set_visible(False)
+        page.append(self.bt_prompt)
+        self._shown_prompt = None
         self.bt_list = Gtk.ListBox()
         self.bt_list.add_css_class("plain")
         self.bt_list.set_selection_mode(Gtk.SelectionMode.NONE)
@@ -258,6 +264,7 @@ class QuickSettings:
 
     def open_page(self, name):
         self.stack.set_visible_child_name(name)
+        self.shell.network.set_list_wanted(name == "wifi")
         if name == "wifi":
             self.shell.network.rescan()
         if name == "bluetooth" and self.shell.bluetooth.powered:
@@ -372,13 +379,16 @@ class QuickSettings:
             self._ask_password(n["ssid"])
             return
         self.wifi_status.set_label(f"Connecting to {n['ssid']}…")
-        net.connect_to(n["ssid"], None, lambda ok, out: self._connected(n["ssid"], ok, out))
+        net.connect_to(n["ssid"], None,
+                       lambda ok, problem: self._connected(n["ssid"], ok, problem))
 
-    def _ask_password(self, ssid):
+    def _ask_password(self, ssid, again=False):
         self.password_for = ssid
         clear(self.wifi_list)
         box = vbox(10)
-        box.append(label(f"Password for “{ssid}”", wrap=True))
+        text = (f"That password didn't work. Type the password for “{ssid}” again." if again
+                else f"Password for “{ssid}”")
+        box.append(label(text, wrap=True))
         entry = Gtk.PasswordEntry()
         entry.set_show_peek_icon(True)
         entry.add_css_class("field")
@@ -407,18 +417,22 @@ class QuickSettings:
         self.wifi_status.set_label(f"Connecting to {ssid}…")
         self._fill_wifi_list()
         self.shell.network.connect_to(ssid, password,
-                                      lambda ok, out: self._connected(ssid, ok, out))
+                                      lambda ok, problem: self._connected(ssid, ok, problem))
 
-    def _connected(self, ssid, ok, out):
+    def _connected(self, ssid, ok, problem):
         if ok:
             self.wifi_status.set_label(f"Connected to {ssid}.")
-        else:
-            reason = "Check the password and try again."
-            if "No network with SSID" in out:
-                reason = "That network is out of range."
-            self.wifi_status.set_label(f"Could not connect to {ssid}. {reason}")
-            if "Secrets were required" in out or "802-11-wireless-security" in out:
-                self.shell.network.forget(ssid)
+            return
+        if problem == "password":
+            self.wifi_status.set_label(f"Could not connect to {ssid}.")
+            if self.window.get_visible() and self.stack.get_visible_child_name() == "wifi":
+                self._ask_password(ssid, again=True)
+            return
+        reason = {
+            "range": "That network is out of range.",
+            "enterprise": "This network also needs a user name, which isn't supported yet.",
+        }.get(problem, "Make sure it is in range and try again.")
+        self.wifi_status.set_label(f"Could not connect to {ssid}. {reason}")
 
     def update_bluetooth(self):
         bt = self.shell.bluetooth
@@ -444,11 +458,18 @@ class QuickSettings:
             self.bt_status.set_label("No Bluetooth adapter was found.")
         elif not bt.powered:
             self.bt_status.set_label("Bluetooth is off. Turn it on with the switch above.")
+        elif bt.busy:
+            verb = {"pair": "Pairing with", "connect": "Connecting to",
+                    "disconnect": "Disconnecting from"}[bt.busy["action"]]
+            self.bt_status.set_label(f"{verb} {bt.busy['name']}…")
         elif bt.discovering:
             self.bt_status.set_label("Looking for devices. Put your device in pairing mode, "
                                      "then click its name.")
-        else:
+        elif any(dev["paired"] for dev in bt.devices):
             self.bt_status.set_label("Click a device to connect or disconnect it.")
+        else:
+            self.bt_status.set_label("No devices yet. Click “Look for new devices” to add one.")
+        self._update_bt_prompt(bt.prompt)
         clear(self.bt_list)
         if not bt.powered:
             return
@@ -468,12 +489,61 @@ class QuickSettings:
             lbr.add_controller(click)
             self.bt_list.append(lbr)
 
+    def _update_bt_prompt(self, prompt):
+        if prompt == self._shown_prompt:
+            return
+        self._shown_prompt = prompt
+        clear(self.bt_prompt)
+        self.bt_prompt.set_visible(prompt is not None)
+        if prompt is None:
+            return
+        # Pairing waits for an answer here, so make sure it can be seen.
+        if not self.window.get_visible():
+            self.show(self.monitor)
+        self.open_page("bluetooth")
+        bt = self.shell.bluetooth
+        name, code, kind = prompt["name"], prompt["code"], prompt["kind"]
+        actions = hbox(8)
+        actions.set_halign(Gtk.Align.END)
+        if kind == "confirm":
+            self.bt_prompt.append(label(f"Does {name} show this number?", wrap=True))
+            self.bt_prompt.append(label(code, "pairing-code"))
+            actions.append(button(text="No", css="flat", on_click=lambda: bt.answer(False)))
+            actions.append(button(text="Yes, pair", css="flat danger",
+                                  on_click=lambda: bt.answer(True)))
+        elif kind == "display":
+            self.bt_prompt.append(label(f"On {name}, type this number and then press Enter:",
+                                        wrap=True))
+            self.bt_prompt.append(label(code, "pairing-code"))
+            actions.append(button(text="Cancel", css="flat", on_click=lambda: bt.answer(False)))
+        else:
+            self.bt_prompt.append(label(
+                f"Type the {'PIN' if kind == 'pin' else 'code'} for {name}. It is shown on the "
+                "device or in its manual (often 0000).", wrap=True))
+            entry = Gtk.Entry()
+            entry.add_css_class("field")
+            if kind == "passkey":
+                entry.set_input_purpose(Gtk.InputPurpose.DIGITS)
+            entry.set_max_length(6 if kind == "passkey" else 16)
+            self.bt_prompt.append(entry)
+
+            def send(*_args):
+                text = entry.get_text().strip()
+                if text and (kind == "pin" or (text.isascii() and text.isdigit())):
+                    bt.answer(True, text)
+
+            entry.connect("activate", send)
+            actions.append(button(text="Cancel", css="flat", on_click=lambda: bt.answer(False)))
+            actions.append(button(text="Pair", css="flat danger", on_click=send))
+            GLib.idle_add(lambda: (entry.grab_focus(), False)[1])
+        self.bt_prompt.append(actions)
+
     def _device_clicked(self, dev):
-        verb = "Disconnecting from" if dev["connected"] else "Connecting to"
-        self.bt_status.set_label(f"{verb} {dev['name']}…")
+        if self.shell.bluetooth.busy:
+            return
 
         def done(ok):
-            if not ok:
+            if ok is False:
                 self.bt_status.set_label(f"That didn't work. Make sure {dev['name']} is "
                                          "switched on and nearby, then try again.")
 
@@ -521,7 +591,7 @@ class QuickSettings:
         self.monitor = monitor
         set_monitor(self.window, monitor)
         self.place()
-        self.stack.set_visible_child_name("main")
+        self.open_page("main")
         self.date_label.set_label(time.strftime("%A %-d %B"))
         self.shell.audio.refresh()
         self.shell.network.refresh()
@@ -531,13 +601,14 @@ class QuickSettings:
     def hide(self):
         if self.shell.bluetooth.discovering:
             self.shell.bluetooth.set_discovering(False)
+        self.shell.network.set_list_wanted(False)
         self.password_for = None
         self.window.set_visible(False)
         self.shell.set_status_open(False)
 
     def back_or_hide(self):
         if self.stack.get_visible_child_name() != "main":
-            self.stack.set_visible_child_name("main")
+            self.open_page("main")
         else:
             self.hide()
 
@@ -547,4 +618,4 @@ class QuickSettings:
         else:
             self.show(monitor)
             if page:
-                self.stack.set_visible_child_name(page)
+                self.open_page(page)

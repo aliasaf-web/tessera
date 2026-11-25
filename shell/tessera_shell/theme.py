@@ -377,6 +377,20 @@ entry.search:focus-within, .search:focus-within {
   border-color: alpha(@accent@, 0.7);
 }
 
+box.prompt {
+  background: alpha(@text@, 0.06);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+label.pairing-code {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  font-feature-settings: "tnum";
+  color: @accent@;
+}
+
 entry.field {
   min-height: 42px;
   border-radius: 12px;
