@@ -197,6 +197,26 @@ static int paint_window(struct client *client) {
 
 /* ------------------------------------------------------------------ popup */
 
+/* xdg-shell asks for these four even though this client has no use for them: at
+ * the version bound above, a listener with a hole in it is an abort, not a
+ * warning - see the note by `head_listener`. The surface's `destroy` is the
+ * desktop retiring our window's role, by which point no test is left waiting on
+ * anything this client could say. */
+static void xdg_surface_destroyed(void *data, struct xdg_surface *surface) {
+}
+
+static void toplevel_configure_bounds(void *data, struct xdg_toplevel *toplevel,
+		int32_t width, int32_t height) {
+}
+
+static void toplevel_wm_capabilities(void *data, struct xdg_toplevel *toplevel,
+		struct wl_array *capabilities) {
+}
+
+static void popup_repositioned(void *data, struct xdg_popup *popup, uint32_t token) {
+	say("menu repositioned\n");
+}
+
 static void popup_surface_configure(void *data, struct xdg_surface *surface, uint32_t serial) {
 	/* A menu is a surface too, and owes the same answer. What it is painted with
 	 * is the client's own business; where the desktop put it is the answer this
@@ -226,6 +246,7 @@ static void popup_done(void *data, struct xdg_popup *popup) {
 static const struct xdg_popup_listener popup_listener = {
 	.configure = popup_configure,
 	.popup_done = popup_done,
+	.repositioned = popup_repositioned,
 };
 
 /* Open the menu below the window's bottom-left corner, a screen's height down
@@ -233,17 +254,22 @@ static const struct xdg_popup_listener popup_listener = {
  * edge can put it back where it belongs. */
 #define POPUP_W 120
 #define POPUP_H 100
+#define POPUP_GAP 60
 
 static void open_popup(struct client *client) {
 	struct xdg_positioner *positioner = xdg_wm_base_create_positioner(client->wm_base);
 	xdg_positioner_set_size(positioner, POPUP_W, POPUP_H);
-	/* Anchor and gravity at the top-left, and the offset pushing the menu a whole
-	 * window plus a bit below that corner: the positioner says "hang down from
-	 * here", and only a desktop that looks at the screen edge has a reason to
-	 * send it back up. */
-	xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_TOP);
+	/* The whole window is the anchor rectangle and the menu hangs off its bottom
+	 * edge, 60 pixels below: which is the everyday shape of a context menu that
+	 * opens under a window at the bottom of the screen, and the desktop needs the
+	 * rectangle to be told at all - xdg-shell answers a positioner without one
+	 * with a protocol error rather than a menu. From here on, only a desktop that
+	 * looks at the screen edge has a reason to send the number back smaller. */
+	xdg_positioner_set_anchor_rect(positioner, 0, 0, (uint32_t)client->width,
+		(uint32_t)client->height);
+	xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_BOTTOM);
 	xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_TOP);
-	xdg_positioner_set_offset(positioner, 0, client->height + 60);
+	xdg_positioner_set_offset(positioner, 0, POPUP_GAP);
 	/* A menu is a surface of its own, with its own xdg_surface - the popup is
 	 * what says whose it is. */
 	struct wl_surface *surface = wl_compositor_create_surface(client->compositor);
@@ -348,9 +374,6 @@ static void head_finished(void *data, struct zwlr_output_head_v1 *head) {
  * that this client has no use for are answered by things that do nothing, which
  * is also what they are for: the name and the place are the whole of what a test
  * here needs, and the compositor is allowed to say the rest whenever it likes. */
-static void head_nothing(void *data, struct zwlr_output_head_v1 *head) {
-}
-
 static void head_nothing_string(void *data, struct zwlr_output_head_v1 *head,
 		const char *text) {
 }
@@ -697,7 +720,13 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 		client->shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
 		wl_shm_add_listener(client->shm, &shm_listener, client);
 	} else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
-		client->wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
+		/* The version the desktop offers, capped at the one this file was
+		 * written against. Version 1 would be the smallest thing that works for
+		 * a plain window, but a menu needs an anchor rectangle and that is a
+		 * version 4 request - and a client that asks for the current version is
+		 * also what the desktop is really being used with. */
+		client->wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface,
+			version < 6 ? version : 6);
 		xdg_wm_base_add_listener(client->wm_base, &wm_base_listener, client);
 	} else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
 		client->layer_shell = wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface,
@@ -749,6 +778,7 @@ static void xdg_surface_configure(void *data, struct xdg_surface *surface, uint3
 
 static const struct xdg_surface_listener xdg_surface_listener = {
 	.configure = xdg_surface_configure,
+	.destroy = xdg_surface_destroyed,
 };
 
 static void toplevel_configure(void *data, struct xdg_toplevel *toplevel, int32_t width,
@@ -788,6 +818,8 @@ static void toplevel_close(void *data, struct xdg_toplevel *toplevel) {
 static const struct xdg_toplevel_listener toplevel_listener = {
 	.configure = toplevel_configure,
 	.close = toplevel_close,
+	.configure_bounds = toplevel_configure_bounds,
+	.wm_capabilities = toplevel_wm_capabilities,
 };
 
 /* ---------------------------------------------------------------- dispatch */

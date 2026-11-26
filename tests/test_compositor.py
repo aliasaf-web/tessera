@@ -498,15 +498,20 @@ class TestWindow:
         return self.start("--panel", *extra, wait_for=wait_for)
 
     def driver(self, *extra, wait_for="outputs ready"):
-        """The client holding a window and the screen tools, waiting for orders.
+        """The client holding the screen tools, waiting for orders.
 
-        The only mode that is not allowed to run out of patience on its own: a
+        Deliberately no window of its own: a test that watches what a screen
+        change does to a window has to know how many windows there are, and a
+        driver that mapped one of its own would silently turn a one-window layout
+        into a two-window one. The sizes asserted below depend on that.
+
+        It is also the only mode not allowed to run out of patience on its own: a
         test that means to watch a screen change needs the client to still be
         there when the change arrives, and to have bound the output manager while
-        the desktop was unlocked - which is also how a test asks for a change the
+        the desktop was unlocked - which is how a test asks for the change the
         lock is supposed to refuse.
         """
-        return self.start("--drive-outputs", "--window", *extra, wait_for=wait_for)
+        return self.start("--drive-outputs", *extra, wait_for=wait_for)
 
     def order(self, process, line):
         """One command to the client, and the flush that makes it be read now."""
@@ -809,9 +814,9 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
     def test_a_menu_asked_below_the_bottom_edge_is_kept_on_the_screen(self):
         """A menu's place is the client's to ask for and the desktop's to allow.
 
-        A client that asks for a menu a whole window-height below the top edge of
-        a window at the bottom of the screen is the everyday case of a context
-        menu opening off-screen. The answer is a number either way: a compositor
+        A menu asked for sixty pixels below the bottom edge of a window that is
+        itself at the bottom of the screen is the everyday case of a context menu
+        opening off-screen. The answer is a number either way: a compositor
         that does not look at the screen edge sends back the number it was given.
         This desktop has a place where it does look, which is the thing being
         asserted - the number that came back is not the one that was asked for,
@@ -823,6 +828,8 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
         height = self.settled(process)[1]
         self.order(process, "popup")
 
+        # 60 is the gap the client puts in its positioner, and the window's height
+        # is its anchor rectangle, so the number it asked for is this one.
         placed = self.expect(process, "popup ")[0]
         parts = placed.split()
         x, y = int(parts[1]), int(parts[2])
@@ -1014,7 +1021,10 @@ class WhatTheLockTakesAway(TestWindow, DesktopMixin, unittest.TestCase):
         # now and never hears of the interface, but as one that had it.
         driver, _lines = self.driver()
         screens = self.layout()
-        name = sorted(screens)[0]
+        # Not `name`: the loops above and below use that variable for the
+        # interfaces they are looking for, and a name reused out of a loop is a
+        # test that quietly asks for the wrong thing.
+        screen_name = sorted(screens)[0]
         self.ask("lock")
         self.wait_state(locked=True)
 
@@ -1050,7 +1060,7 @@ class WhatTheLockTakesAway(TestWindow, DesktopMixin, unittest.TestCase):
         # from you rather than protecting you, which is why the answer is an
         # event and not a silent yes.
         self.assertEqual(self.layout(), screens, "the screens moved before the lock")
-        self.order(driver, f"apply {name} 300 0")
+        self.order(driver, f"apply {screen_name} 300 0")
         self.expect(driver, "apply failed")
         self.assertEqual(self.layout(), screens,
                          "a locked desktop let a client move a screen anyway")
