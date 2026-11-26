@@ -12,6 +12,11 @@ step before these tests run):
     meson setup build compositor && ninja -C build
     python3 -m unittest discover -s tests
 
+Each class starts its own desktop, in an empty folder of its own, with a config
+that turns the idle lock, the screen blanking and the workspace animation off -
+so nothing can move under a test while it runs, and one test's changes are just
+that: changes, which the tests below take into account.
+
 Another build can be tried with TESSERA=/path/to/tessera. With nothing built,
 these tests are skipped rather than failed.
 """
@@ -83,6 +88,17 @@ class DesktopMixin:
                        WLR_LIBINPUT_NO_DEVICES="1",
                        WLR_HEADLESS_OUTPUTS=cls.screens,
                        TESSERA_STARTUP="true")
+        # A desktop under test must not drift out from under the tests, so it is
+        # given a config of its own: no idle lock, no screen blanking, no
+        # workspace animation. Left at the defaults, the five-minute idle lock
+        # would shut a class out on a slow machine, and a screen turning itself
+        # off halfway through a test is not a thing worth debugging.
+        folder = os.path.join(cls.env["XDG_CONFIG_HOME"], "tessera")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "config"), "w", encoding="utf-8") as f:
+            f.write("idle_lock_minutes=0\n")
+            f.write("idle_screen_off_minutes=0\n")
+            f.write("animations=false\n")
         cls.desktop = subprocess.Popen([BINARY], stdout=cls.log, stderr=subprocess.STDOUT,
                                        env=cls.env, start_new_session=True)
         if not until(cls.sockets):
@@ -139,10 +155,12 @@ class DesktopMixin:
 
     # ---------------------------------------------------------- the protocol
 
-    def ask(self, *words):
+    def ask(self, *words, expect_ok=True):
         """`tessera msg ...` run against the desktop; returns its answer. A
         reply the bar could not read is a failure in itself, so it is parsed
-        here rather than looked at as text."""
+        here rather than looked at as text. A command refused when it should
+        have worked fails with what the desktop wrote, because that is where the
+        reason is; `expect_ok=False` is for the refusals a test is after."""
         command = [BINARY, "msg"] + list(words)
         try:
             result = subprocess.run(command, capture_output=True, text=True,
@@ -154,10 +172,13 @@ class DesktopMixin:
             self.fail(f"{command!r} answered nothing (exit {result.returncode})\n"
                       f"{self.output()}")
         try:
-            return json.loads(line.splitlines()[0])
+            answer = json.loads(line.splitlines()[0])
         except ValueError as error:
             self.fail(f"{command!r} answered something the bar could not read ({error}): "
                       f"{line[:200]!r}\n{self.output()}")
+        if expect_ok and answer.get("ok") is False:
+            self.fail(f"{command!r} was refused: {answer.get('error')!r}\n{self.output()}")
+        return answer
 
     def state(self):
         """The state line, with the parts the bar relies on checked."""
@@ -208,8 +229,7 @@ class Desktop(DesktopMixin, unittest.TestCase):
                                env=self.env, timeout=30)
         self.assertNotEqual(usage.returncode, 0)
         self.assertIn("Usage: tessera msg", usage.stderr)
-        unknown = self.ask("nothing-such")
-        self.assertFalse(unknown.get("ok"))
+        unknown = self.ask("nothing-such", expect_ok=False)
         self.assertIn("unknown command", unknown.get("error", ""))
 
     def test_the_socket_is_only_for_this_user(self):
@@ -231,27 +251,29 @@ class Desktop(DesktopMixin, unittest.TestCase):
                 self.assertIn(key, output)
 
     def test_workspaces_are_kept_and_reported(self):
-        self.wait_state(workspace=1)
-        self.assertTrue(self.ask("workspace", "4").get("ok"))
-        self.wait_state(workspace=4)
+        """Every screen keeps its own workspace number and says it in the state
+        line. The numbers here are ones no other test in this class uses: one
+        desktop is shared by the class, so a test starts where the last one left
+        off, and that is worth knowing rather than working around."""
+        self.ask("workspace", "7")
+        self.wait_state(workspace=7)
         # Next and previous go at most one empty workspace past the last one in
         # use, so with no windows anywhere "next" has nowhere new to go.
-        self.assertTrue(self.ask("workspace", "next").get("ok"))
-        self.wait_state(workspace=4)
-        self.assertTrue(self.ask("workspace", "prev").get("ok"))
-        self.wait_state(workspace=3)
+        self.ask("workspace", "next")
+        self.wait_state(workspace=7)
+        self.ask("workspace", "prev")
+        self.wait_state(workspace=6)
         # Out of range is refused by doing nothing, rather than by jumping to
         # the first or the last workspace.
         for refused in ("0", "40", "-2", "ten"):
-            self.assertTrue(self.ask("workspace", refused).get("ok"))
-            self.wait_state(workspace=3)
-        self.assertTrue(self.ask("workspace", "9").get("ok"))
+            self.ask("workspace", refused)
+            self.wait_state(workspace=6)
+        self.ask("workspace", "9")
         self.wait_state(workspace=9)
-        self.assertTrue(self.ask("workspace", "prev").get("ok"))
+        self.ask("workspace", "prev")
         self.wait_state(workspace=8)
         # A screen that is not there is said so, quietly.
-        answer = self.ask("workspace", "2", "HDMI-NOPE")
-        self.assertFalse(answer.get("ok"))
+        answer = self.ask("workspace", "2", "HDMI-NOPE", expect_ok=False)
         self.assertIn("no such screen", answer.get("error", ""))
 
     def test_a_desktop_with_no_windows_survives_window_commands(self):
@@ -260,18 +282,18 @@ class Desktop(DesktopMixin, unittest.TestCase):
         for words in (("close",), ("fullscreen",), ("float",), ("move-to-workspace", "3"),
                       ("focus", "17"), ("night-light", "toggle"), ("night-light", "on"),
                       ("night-light", "off"), ("reload",)):
-            self.assertTrue(self.ask(*words).get("ok"), f"{words} was not accepted")
-        state = self.state()  # (still answering, after all of that)
+            self.ask(*words)  # (an answer of "refused" fails the test itself)
+        state = self.state()  # (and the desktop is still there to answer)
         self.assertFalse(state["locked"])
 
     def test_the_screens_can_be_switched_off_and_back(self):
-        self.assertTrue(self.ask("dpms", "off").get("ok"))
-        self.assertTrue(self.ask("dpms", "on").get("ok"))
+        self.ask("dpms", "off")
+        self.ask("dpms", "on")
         self.wait_state(locked=False)
 
     def test_exec_runs_what_it_is_asked_to(self):
         marker = os.path.join(self.runtime, "started-by-the-desktop")
-        self.assertTrue(self.ask("exec", f"touch {marker}").get("ok"))
+        self.ask("exec", f"touch {marker}")
         self.assertTrue(until(lambda: os.path.exists(marker), 20),
                         "the desktop did not run the command it was given")
 
@@ -306,7 +328,7 @@ class Desktop(DesktopMixin, unittest.TestCase):
             stream = client.makefile()
             opening = json.loads(stream.readline())
             self.assertEqual(opening.get("event"), "state")
-            self.assertTrue(self.ask("workspace", "2").get("ok"))
+            self.ask("workspace", "2")
             for _ in range(20):
                 line = json.loads(stream.readline())
                 if line.get("event") == "state" and line.get("workspace") == 2:
@@ -322,17 +344,17 @@ class ManyScreens(DesktopMixin, unittest.TestCase):
 
     The state and the screen list were once written into buffers of a size
     settled in advance, which cut the line in half on the fourth screen; the
-    bar was left with text it could not read. The headless backend is asked
-    for six screens here - the desktop reports however many it actually made,
-    which is what the line has to cover.
+    bar was left with text it could not read. Six screens are asked of the
+    headless backend here, because six is more than that buffer held; the
+    desktop has to report all of them, in the same order, in both lines.
     """
 
-    screens = "HEADLESS-1,HEADLESS-2,HEADLESS-3,HEADLESS-4,HEADLESS-5,HEADLESS-6"
+    screens = "6"
 
     def test_every_screen_appears_in_the_state_line(self):
         listed = self.ask("outputs")["outputs"]
-        self.assertGreaterEqual(len(listed), 1)
-        print(f"    (the desktop made {len(listed)} screen(s))")
+        self.assertEqual(len(listed), int(self.screens),
+                         "the desktop did not make the screens it was asked for")
         state = self.state()
         names = [entry["name"] for entry in state["outputs"]]
         self.assertEqual(names, [entry["name"] for entry in listed],
@@ -350,7 +372,7 @@ class ManyScreens(DesktopMixin, unittest.TestCase):
         to be its own and has to come back in the state line."""
         names = [entry["name"] for entry in self.state()["outputs"]]
         for number, name in enumerate(names, start=1):
-            self.assertTrue(self.ask("workspace", str(number), name).get("ok"))
+            self.ask("workspace", str(number), name)
         state = self.state()
         for number, name in enumerate(names, start=1):
             entry = [item for item in state["outputs"] if item["name"] == name][0]
@@ -363,10 +385,16 @@ class Locked(DesktopMixin, unittest.TestCase):
     screens = "1"
 
     def test_the_lock_screen_closes_the_desktop(self):
-        self.assertTrue(self.ask("lock").get("ok"))
+        # The idle lock is turned off in the config this desktop was given, so
+        # nothing but this test can lock it.
+        self.wait_state(locked=False)
+        self.ask("lock")
         self.wait_state(locked=True)
-        # Locking again changes nothing, rather than starting a second lock.
-        self.assertTrue(self.ask("lock").get("ok"))
+        # A second request over the socket is refused rather than starting
+        # another lock screen; the key binding goes straight in, because
+        # `lock_engage` itself does nothing when it is already locked.
+        again = self.ask("lock", expect_ok=False)
+        self.assertIn("locked", again.get("error", ""))
         self.wait_state(locked=True)
 
         refused = (("exec", "touch nowhere"), ("logout",), ("exit",), ("reload",),
@@ -374,8 +402,7 @@ class Locked(DesktopMixin, unittest.TestCase):
                    ("close",), ("focus", "1"), ("fullscreen",), ("float",),
                    ("night-light", "on"))
         for words in refused:
-            answer = self.ask(*words)
-            self.assertFalse(answer.get("ok"), f"{words} was accepted while locked")
+            answer = self.ask(*words, expect_ok=False)
             self.assertIn("locked", answer.get("error", ""), f"{words} gave the wrong reason")
 
         # Watching is still allowed: that is how the bar keeps up with the
