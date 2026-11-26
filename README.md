@@ -293,7 +293,9 @@ flake8 shell tools tests                        # Python style
 ruff check .                                    # the same Python, linted
 cppcheck --quiet --inline-suppr --std=c11 --language=c \
   --enable=warning --error-exitcode=1 \
-  -Icompositor/src -Ibuild compositor/src/*.c   # the desktop's C
+  --suppress=uninitvar --suppress=memleak -DTESSERA_VERSION='"'$(cat VERSION)'"' \
+  -Icompositor/src -Ibuild $(pkg-config --cflags-only-I wlroots-0.18) \
+  compositor/src/*.c                           # the desktop's C
 ```
 
 `ruff.toml` at the top of the tree holds the rules ruff keeps. flake8 is still run

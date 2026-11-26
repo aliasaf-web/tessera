@@ -78,8 +78,9 @@ jobs:
           # before - a check that has to be muted on its first day is a check
           # nobody will ever unmute.
           #
-          # Two suppressions, both about the tool rather than the code, and named
-          # so that anyone can go and look. `uninitvar` reads this codebase's
+          # Three things are muted, all of them the tool's model of wlroots rather
+          # than anything in the code, and each named so that anyone can go and
+          # look. `uninitvar` reads this codebase's
           # `calloc` + `wl_container_of` idiom - allocate a struct of a hundred
           # fields, initialise a dozen, and every later read of the rest is a
           # field the zeroing already set - and so it called every view, layer and
@@ -89,9 +90,20 @@ jobs:
           # `normalCheckLevelMaxBranches` is cppcheck saying it gave up on a
           # function's branches at the default check level; the exhaustive level it
           # suggests costs a minute of CI for what it has found here so far.
+          # `memleak` is the same story one level up: a hundred and three of these
+          # files' allocations end in `wl_signal_add`, which hands the object to
+          # the signal to free later, and cppcheck reads that as a leak in every
+          # one of them - a finding repeated across input.c, view.c, layer.c,
+          # xwayland.c and idle.c is the tool's model of wlroots, not the code.
+          # Leaks in this project are checked where they can actually be seen: the
+          # sanitiser job runs the C tests with `detect_leaks=1`.
+          # The version has to be given or cppcheck cannot read `ipc.c`'s reply to
+          # `tessera msg version` at all, since it is made by pasting a macro into a
+          # string; meson passes it, and the value does not matter to the analysis.
           cppcheck --quiet --inline-suppr --std=c11 --language=c \
             --enable=warning --error-exitcode=1 \
             --suppress=uninitvar --suppress=normalCheckLevelMaxBranches \
+            --suppress=memleak -DTESSERA_VERSION='"0.0.0"' \
             -DWLR_USE_UNSTABLE -Icompositor/src -Ibuild \
             $(pkg-config --cflags-only-I wlroots-0.18 pixman-1 libdrm wayland-server xkbcommon) \
             $(find compositor/src -name '*.c') 2>&1 \
