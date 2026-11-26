@@ -20,7 +20,7 @@ gi.require_version("GdkPixbuf", "2.0")
 
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
-from . import __version__, ipc, read_provenance  # noqa: E402
+from . import __version__, ipc, read_provenance, services  # noqa: E402
 from .terminal import terminal_command  # noqa: E402
 from .theme import ACCENTS, read_config, write_config_value  # noqa: E402
 
@@ -59,6 +59,24 @@ def run(args):
         return out.returncode, out.stdout
     except (OSError, subprocess.TimeoutExpired):
         return 1, ""
+
+
+def apply_sound_device(setter, value, on_failure=None):
+    """Asks PulseAudio to make `value` the default device, and does not wait.
+
+    Nothing on this page reads anything back from a device change - the row has
+    already been chosen - so waiting for pactl would only hold the whole window
+    still while it answers. pactl is quick on a healthy machine and can sit for
+    seconds on one whose sound server is restarting, which is exactly when the
+    settings window is being used. So it goes through the same non-blocking
+    runner the rest of the shell uses, which also reaps the child; a failure is
+    worth a line to the user, which is what `on_failure` is for.
+    """
+    def finished(ok, out):
+        if not ok and on_failure is not None:
+            on_failure(out)
+
+    services.run_async(["pactl", setter, value], finished)
 
 
 def keyboard_layouts():
@@ -727,8 +745,15 @@ class SettingsWindow(Adw.ApplicationWindow):
                 group.add(Adw.ActionRow(title=title, subtitle="No devices found"))
                 continue
             _code, default = run(["pactl", getter])
-            group.add(self.combo(title, None, found, default.strip(),
-                                 lambda v, s=setter: run(["pactl", s, v])))
+
+            def changed(value, s=setter):
+                # A device list can go stale between building the page and
+                # clicking a row in it, which is worth a line of text rather
+                # than a window that stops answering.
+                apply_sound_device(s, value,
+                                   lambda why: self.toast(f"Could not reach PulseAudio: {why}"))
+
+            group.add(self.combo(title, None, found, default.strip(), changed))
         return self.page_with(group)
 
     # ----------------------------------------------------------------- Power

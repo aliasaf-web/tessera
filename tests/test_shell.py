@@ -39,6 +39,61 @@ def needs_gtk(test):
 
 
 @needs_gtk
+class SoundDeviceChanges(unittest.TestCase):
+    """The sound page must not wait for PulseAudio.
+
+    Picking an output device is a request with nothing to read back, and pactl
+    can sit for seconds when the sound server is restarting - which is exactly
+    when the settings window is being used. The freeze was in the waiting, so
+    what is checked is that the change is handed to the non-blocking runner this
+    app already has, and that a failure comes back as something to say.
+    """
+
+    class Runner:
+        """The one call `apply_sound_device` makes, recorded instead of run."""
+
+        def __init__(self):
+            self.started = []
+
+        def run_async(self, args, done=None):
+            self.started.append((args, done))
+
+    def setUp(self):
+        from tessera_shell import settings
+
+        self.settings = settings
+        self.runner = self.Runner()
+        self.patched = mock.patch.object(settings, "services", self.runner)
+        self.patched.start()
+
+    def tearDown(self):
+        self.patched.stop()
+
+    def test_pactl_is_handed_over_and_not_waited_for(self):
+        said = []
+        self.settings.apply_sound_device(
+            "set-default-sink", "alsa_output.pci-0000", on_failure=said.append)
+        self.assertEqual([args for args, _done in self.runner.started],
+                         [["pactl", "set-default-sink", "alsa_output.pci-0000"]])
+        _args, done = self.runner.started[0]
+        self.assertIsNotNone(done, "nobody was told whether the device changed")
+        done(True, "")
+        self.assertEqual(said, [], "a request that went out was reported as a failure")
+
+    def test_a_failure_comes_back_as_something_to_say(self):
+        said = []
+        self.settings.apply_sound_device("set-default-source", "gone", on_failure=said.append)
+        _args, done = self.runner.started[0]
+        done(False, "GDBus.Error: no such sink")
+        self.assertEqual(said, ["GDBus.Error: no such sink"])
+        # With nobody to tell, a failure is still not the caller's problem: the
+        # row is free to be tried again, and the window must stay open.
+        self.settings.apply_sound_device("set-default-source", "gone")
+        _args, done = self.runner.started[-1]
+        done(False, "no sink")
+
+
+@needs_gtk
 class ConfigFile(unittest.TestCase):
     """The shell must read tests/config-sample exactly as the window manager
     does (compositor/tests/config_test.c checks the same file)."""

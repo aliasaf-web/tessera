@@ -290,7 +290,19 @@ meson setup build compositor && ninja -C build  # build the window manager
 meson test -C build --print-errorlogs           # buffers, the config file, idle
 python3 -m unittest discover -s tests           # the shell, and the desktop
 flake8 shell tools tests                        # Python style
+ruff check .                                    # the same Python, linted
+cppcheck --quiet --inline-suppr --std=c11 --language=c \
+  --enable=warning --error-exitcode=1 \
+  --suppress=uninitvar --suppress=memleak -DTESSERA_VERSION='"'$(cat VERSION)'"' \
+  -Icompositor/src -Ibuild $(pkg-config --cflags-only-I wlroots-0.18) \
+  compositor/src/*.c                           # the desktop's C
 ```
+
+`ruff.toml` at the top of the tree holds the rules ruff keeps. flake8 is still run
+as well, because the shell's `# noqa` comments are written for it and it is what
+most people already have. `cppcheck` needs wlroots' headers, and the generated
+protocol headers from the build, so it says something about this code only after
+the two lines above have run.
 
 Most of what `python3 -m unittest` runs needs only Python. Two files go
 further: `tests/test_contract.py` reads the C sources and the Python sources
@@ -299,7 +311,12 @@ commands `tessera msg` accepts), and `tests/test_compositor.py` starts the
 window manager you just built on a headless backend - no screen, no graphics
 driver - and drives it over its control socket the way the bar does. It skips
 itself when nothing has been built, and `TESSERA=/path/to/tessera` points it
-at a different build. The sanitiser job runs the first two again with
+at a different build. It can also put a window *inside* that desktop:
+`compositor/tests/window_client.c` is built beside `tessera` as
+`tessera-test-window`, mapping one window that prints a line per event, and
+`--globals` listing what the desktop advertises to whoever asks. That is how
+tiling a real window, closing one from the socket, and what the lock screen
+hides from a program started behind it get checked rather than only read. The sanitiser job runs the first two again with
 AddressSanitizer and UndefinedBehaviorSanitizer turned on.
 
 A red run does not need the Actions log to be understood: `tools/ci-annotate.py`

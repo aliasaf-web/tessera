@@ -50,10 +50,64 @@ jobs:
       # to run on every pull request, and what it checks out is what then runs.
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v7.0.1
 
+      # The build goes to a log the reporter at the end reads, because a failed
+      # compile says so in the Actions log only - and the log is on a host that a
+      # restricted network cannot reach, which leaves a red tick and no reason.
       - name: Build the window manager (warnings are errors)
         run: |
-          meson setup build compositor -Dwerror=true
-          ninja -C build
+          meson setup build compositor -Dwerror=true 2>&1 \
+            | tee "${RUNNER_TEMP:-/tmp}/build.log"
+          ninja -C build 2>&1 | tee -a "${RUNNER_TEMP:-/tmp}/build.log"
+
+      # The other checks in this job compare files with each other; this one
+      # reads the desktop's C. It runs after the build, where wlroots' headers
+      # are installed and the protocol headers this project generates exist, so
+      # what it says is about this code rather than about context it could not
+      # find. A finding is worth fixing or saying something about, so it fails
+      # the job; `// cppcheck-suppress id` next to a line that knows better.
+      - name: Static analysis of the desktop
+        run: |
+          apt-get install -y --no-install-recommends cppcheck
+          cppcheck --version
+          # --cflags-only-I rather than --cflags: cppcheck reads the same tree the
+          # compiler does, but it is not a compiler, and a `-pthread` or
+          # `-fno-strict-aliasing` handed over by pkg-config is an error to it.
+          # Only `warning` is enabled to start with, and the run is the thing that
+          # decides what the code is ready for: performance and portability are the
+          # two to add once the findings that are already here are answered, not
+          # before - a check that has to be muted on its first day is a check
+          # nobody will ever unmute.
+          #
+          # Three things are muted, all of them the tool's model of wlroots rather
+          # than anything in the code, and each named so that anyone can go and
+          # look. `uninitvar` reads this codebase's
+          # `calloc` + `wl_container_of` idiom - allocate a struct of a hundred
+          # fields, initialise a dozen, and every later read of the rest is a
+          # field the zeroing already set - and so it called every view, layer and
+          # x11 child in the tree uninitialized; that is not a finding, and
+          # suppressing one check is cheaper and truer than forty inline
+          # suppressions on lines that are not wrong.
+          # `normalCheckLevelMaxBranches` is cppcheck saying it gave up on a
+          # function's branches at the default check level; the exhaustive level it
+          # suggests costs a minute of CI for what it has found here so far.
+          # `memleak` is the same story one level up: a hundred and three of these
+          # files' allocations end in `wl_signal_add`, which hands the object to
+          # the signal to free later, and cppcheck reads that as a leak in every
+          # one of them - a finding repeated across input.c, view.c, layer.c,
+          # xwayland.c and idle.c is the tool's model of wlroots, not the code.
+          # Leaks in this project are checked where they can actually be seen: the
+          # sanitiser job runs the C tests with `detect_leaks=1`.
+          # The version has to be given or cppcheck cannot read `ipc.c`'s reply to
+          # `tessera msg version` at all, since it is made by pasting a macro into a
+          # string; meson passes it, and the value does not matter to the analysis.
+          cppcheck --quiet --inline-suppr --std=c11 --language=c \
+            --enable=warning --error-exitcode=1 \
+            --suppress=uninitvar --suppress=normalCheckLevelMaxBranches \
+            --suppress=memleak -DTESSERA_VERSION='"0.0.0"' \
+            -DWLR_USE_UNSTABLE -Icompositor/src -Ibuild \
+            $(pkg-config --cflags-only-I wlroots-0.18 pixman-1 libdrm wayland-server xkbcommon) \
+            $(find compositor/src -name '*.c') 2>&1 \
+            | tee "${RUNNER_TEMP:-/tmp}/cppcheck.log"
 
       - name: Window manager tests
         run: |
@@ -70,6 +124,18 @@ jobs:
 
       - name: Python style
         run: flake8 shell tools tests 2>&1 | tee "${RUNNER_TEMP:-/tmp}/style.log"
+
+      # flake8 has had no release since 2023, so the same Python is checked with a
+      # maintained linter too - a name used before it is bound, a condition that
+      # can only be true. From PyPI rather than apt, because the Debian package
+      # lags by enough to disagree about which rules exist: the ones kept are in
+      # ruff.toml at the top of the tree.
+      - name: Python lint
+        run: |
+          apt-get install -y --no-install-recommends python3-pip
+          python3 -m pip install --quiet --break-system-packages ruff
+          ruff --version
+          ruff check . 2>&1 | tee "${RUNNER_TEMP:-/tmp}/lint.log"
 
       - name: Shell scripts
         run: |
@@ -124,7 +190,7 @@ jobs:
           # warning the sanitizers provoke should not hide what they found. The
           # job above is the one that treats warnings as errors.
           meson setup build-sanitizer compositor -Db_sanitize=address,undefined
-          ninja -C build-sanitizer
+          ninja -C build-sanitizer 2>&1 | tee "${RUNNER_TEMP:-/tmp}/build.log"
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
             meson test -C build-sanitizer --print-errorlogs 2>&1 \
             | tee "${RUNNER_TEMP:-/tmp}/meson.log"
