@@ -245,7 +245,8 @@ tell whether an update actually brought something new, instead of taking
   for a text screen, log in, and look at `~/.local/state/tessera/tessera.log`.
   **Ctrl + Alt + F7** goes back to the desktop.
 - **The bar disappeared:** it restarts by itself within a few seconds. Its log is
-  `~/.local/state/tessera/shell.log`.
+  `~/.local/state/tessera/shell.log`. Both logs are kept to the last few hundred
+  kilobytes of the previous run, so a month of complaining can't fill the disk.
 - **An update said nothing was new, and the version stayed the same:** the Tessera
   folder is probably not on the branch that has the newer version. Look with
   `cd ~/tessera && git status -sb` (the first word after `##` is the branch);

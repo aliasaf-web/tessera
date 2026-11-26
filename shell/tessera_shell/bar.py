@@ -4,7 +4,7 @@ import time
 
 from gi.repository import GLib, Gtk
 
-from . import ipc
+from . import clock, ipc
 from .layer import Edge, Layer, button, clear, hbox, icon, label, layer_window
 
 
@@ -104,8 +104,13 @@ class Bar:
         return False
 
     def update_clock(self):
-        self.clock.set_label(time.strftime("%H:%M"))
-        self.status.set_tooltip_text(time.strftime("%A %-d %B %Y"))
+        # clock.py rather than time.strftime: the desktop follows the language for
+        # names and dates everywhere else, and the day without its leading zero is
+        # spelled in a way only one C library understands.
+        text = clock.clock_text()
+        if text:
+            self.clock.set_label(text)
+        self.status.set_tooltip_text(clock.date_text(with_year=True))
 
     def update_network(self):
         net = self.shell.network

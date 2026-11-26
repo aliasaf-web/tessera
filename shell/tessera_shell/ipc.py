@@ -25,16 +25,23 @@ def runtime_dir():
 
 
 def socket_path():
-    """The control socket, in the user's private runtime folder (None if
-    there is no such folder: there is no safe place for it then)."""
-    path = os.environ.get("TESSERA_SOCK")
-    if path:
-        return path
+    """The control socket, in the user's private runtime folder (None if there
+    is no such folder: there is no safe place for it then).
+
+    The folder decides, and `TESSERA_SOCK` is the fallback for a desktop that
+    put its socket somewhere else - which is how the window manager tells the
+    programs it starts where to find it, and how a test aims at a desktop of its
+    own. Looking in the folder first is what stops any program of yours from
+    pointing the bar at a desktop of *its* own, which could answer `state` with
+    whatever it liked and look exactly like the real thing."""
     runtime = runtime_dir()
     if runtime is None:
-        return None
+        return os.environ.get("TESSERA_SOCK") or None
     display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
-    return os.path.join(runtime, f"tessera-{display}.sock")
+    derived = os.path.join(runtime, f"tessera-{display}.sock")
+    if os.path.exists(derived):
+        return derived
+    return os.environ.get("TESSERA_SOCK") or derived
 
 
 def send(*words):

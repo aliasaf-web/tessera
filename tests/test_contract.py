@@ -243,6 +243,37 @@ class Provenance(unittest.TestCase):
         self.assertIn("$TESSERA_VERSION", version[0])
 
 
+class FindingTheDesktop(unittest.TestCase):
+    """Both halves look for the running desktop the same way round.
+
+    The bar (Python) and `tessera msg` (C) each work out where the control
+    socket is from the runtime folder, and fall back to `TESSERA_SOCK`. The
+    order is the whole point: the folder is where the desktop actually put the
+    socket, and a variable is something any program you run can set - so a
+    client that asked the variable first could be pointed at a desktop of that
+    program's own, whose answers would look exactly like the real ones.
+    """
+
+    def test_the_folder_is_asked_first_in_both(self):
+        ipc_c = source(ROOT / "compositor" / "src" / "ipc.c")
+        ipc_py = source(SHELL_DIR / "ipc.py")
+        client = body_of(ipc_c, "int ipc_client_main(")
+        self.assertIn("access(in_folder, F_OK) == 0", client,
+                      "the C client stopped checking that the socket is really there")
+        self.assertLess(client.index("access(in_folder"), client.index("env && env[0]"),
+                        "the C client consults the variable before the folder")
+        self.assertIn("if os.path.exists(derived):\n        return derived", ipc_py,
+                      "the bar consults the variable before the folder")
+
+    def test_the_variable_is_still_honoured(self):
+        """A desktop that put its socket elsewhere has to be reachable: it is
+        how the window manager tells its own programs where it is, and how a
+        test aims at a desktop of its own."""
+        client = body_of(source(ROOT / "compositor" / "src" / "ipc.c"), "int ipc_client_main(")
+        self.assertIn('snprintf(path, sizeof(path), "%s", env)', client)
+        self.assertIn('os.environ.get("TESSERA_SOCK")', source(SHELL_DIR / "ipc.py"))
+
+
 class LockScreenLimits(unittest.TestCase):
     """The longest password the lock screen can send, said once."""
 
