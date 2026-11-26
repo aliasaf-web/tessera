@@ -176,6 +176,13 @@ bottom (Restart and Shut down ask you to click twice, because open apps close).
 The power button puts the laptop to sleep from there. If Caps Lock is on, the
 lock screen tells you.
 
+While the screen is locked the desktop behind it isn't drawn at all, so a
+program watching the screen sees only the lock screen, and the control socket
+(`tessera msg`) can be read but not used to start or move anything. It is a
+lock for a coffee break, not a vault: programs you started before locking keep
+running, and your files are as readable to your own account as they always
+were.
+
 Screenshots are saved in **Pictures › Screenshots** and copied, so you can paste them straight away.
 
 ## Settings

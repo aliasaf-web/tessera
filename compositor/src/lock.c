@@ -120,6 +120,23 @@ static int clock_tick(void *data) {
 	return 0;
 }
 
+/* Locked: the session stops being drawn at all. Nothing changes on the
+ * screen, because the lock screen already covers all of it, but a program
+ * watching the screen - the screencopy protocol, or a screenshot taken by
+ * something you started before locking - now sees the lock screen instead of
+ * your windows and what is written in them. The desktop colour and the
+ * wallpaper stay: the lock screen shows those itself. */
+static void lock_session_visible(struct ts_server *server, bool visible) {
+	struct wlr_scene_tree *layers[] = {
+		server->layer_shell_bg, server->layer_shell_bottom, server->layer_tiled,
+		server->layer_floating, server->layer_shell_top, server->layer_fullscreen,
+		server->layer_popups, server->layer_shell_overlay, server->layer_drag,
+	};
+	for (size_t i = 0; i < sizeof(layers) / sizeof(layers[0]); i++) {
+		wlr_scene_node_set_enabled(&layers[i]->node, visible);
+	}
+}
+
 void lock_engage(struct ts_server *server) {
 	if (server->locked) {
 		return;
@@ -140,6 +157,7 @@ void lock_engage(struct ts_server *server) {
 	wlr_seat_pointer_clear_focus(server->seat);
 	input_constraint_update(server); /* lets go of a held pointer */
 	lock_arrange(server);
+	lock_session_visible(server, false); /* what is behind it is nobody's business */
 	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 	server->cursor_image = "default";
 	idle_update_inhibit(server); /* windows behind the lock screen can't be seen */
@@ -156,6 +174,9 @@ static void lock_release(struct ts_server *server) {
 	wl_event_source_timer_update(server->auth_wait_timer, 0);
 	server->password_len = 0;
 	explicit_bzero(server->password, sizeof(server->password));
+	/* The windows come back before the lock screen goes away, so the screen
+	 * is never empty for a moment. */
+	lock_session_visible(server, true);
 	struct ts_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
 		lock_output_destroyed(output);
