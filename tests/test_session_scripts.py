@@ -9,6 +9,7 @@ each one - the things that stop a small session from becoming a disk full of
 logs, a restart loop, or a panel with more power than it needs.
 """
 
+import os
 import pathlib
 import re
 import subprocess
@@ -324,20 +325,35 @@ class RunnerScripts(unittest.TestCase):
     """Scripts meant to be run are marked as such, in the tree and not just in
     the copy the installer lays down."""
 
-    def test_the_scripts_are_executable_in_git(self):
-        if not (ROOT / ".git").exists():
-            self.skipTest("not a git checkout, so there is no recorded mode to read")
-        listed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-s", "data/"],
-                                capture_output=True, text=True, check=True).stdout
+    SCRIPTS = ("tessera-update", "tessera-session", "tessera-autostart", "tessera-shell",
+               "tessera-settings")
+
+    def test_the_scripts_can_be_run_from_a_checkout(self):
+        """What "installed as 755" is worth: the copy in the folder you fixed has
+        to be runnable too, or the first thing a person tries from a checkout is
+        a permission denied that has nothing to do with their change."""
+        for name in self.SCRIPTS:
+            path = DATA / name
+            self.assertTrue(path.exists(), f"data/{name} is gone")
+            self.assertTrue(os.access(path, os.X_OK),
+                            f"data/{name} is not executable here, and reading it with `sh` "
+                            "instead is a habit that breaks the moment someone runs it directly")
+
+    def test_the_recorded_mode_says_the_same(self):
+        """The filesystem answer above is checked out from git's index, so if git
+        is willing to say what it recorded, the two should not disagree."""
+        done = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-s", "data/"],
+                              capture_output=True, text=True)
+        if done.returncode != 0:
+            self.skipTest(f"git would not read the index here: {done.stderr.strip()[:200]}")
         modes = {}
-        for line in listed.splitlines():
+        for line in done.stdout.splitlines():
             mode, _, path = line.partition(" ")
             modes[path.split("\t")[-1]] = mode
-        for name in ("tessera-update", "tessera-session", "tessera-autostart", "tessera-shell",
-                     "tessera-settings"):
+        for name in self.SCRIPTS:
             self.assertEqual(modes.get(f"data/{name}"), "100755",
-                             f"data/{name} is not executable in the tree, so running it "
-                             "from a checkout fails in a way the installed copy never does")
+                             f"data/{name} is recorded as {modes.get(f'data/{name}')}, so a "
+                             "fresh checkout would not be able to run it either")
 
 
 if __name__ == "__main__":

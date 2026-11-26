@@ -19,8 +19,9 @@ def _format(moment, pattern):
 
 
 def now():
-    """This moment, in the desktop's local time."""
-    return GLib.DateTime.new_local()
+    """This moment, in the desktop's local time, or None if the machine cannot
+    say what that is."""
+    return GLib.DateTime.new_now_local()
 
 
 def clock_text(at=None):

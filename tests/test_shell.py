@@ -247,7 +247,9 @@ class Dates(unittest.TestCase):
     """
 
     def day(self, number):
-        return GLib.DateTime.new_local_simple(f"2026-11-{number:02d}T12:00:00")
+        # The 7th or the 26th of November 2026, at noon, in this machine's zone:
+        # only the day of the month is what these tests are about.
+        return GLib.DateTime.new_local(2026, 11, number, 12, 0, 0)
 
     def test_the_day_of_the_month_has_no_leading_zero(self):
         for number, expected in ((7, "7"), (26, "26")):
@@ -266,6 +268,15 @@ class Dates(unittest.TestCase):
 
     def test_the_bar_clock_is_two_digits_a_colon_and_two_more(self):
         self.assertRegex(clock.clock_text(at=self.day(7)), r"^\d\d:\d\d$")
+
+    def test_asking_for_this_moment_works_too(self):
+        """The widgets pass no time of their own, so the no-argument path is the
+        one that matters: it is where a constructor named one letter off hides."""
+        self.assertRegex(clock.clock_text(), r"^\d\d:\d\d$")
+        for with_year in (False, True):
+            text = clock.date_text(with_year=with_year)
+            self.assertNotIn("%", text, text)
+            self.assertGreaterEqual(len(text.split()), 3, text)
 
 
 class Readme(unittest.TestCase):
