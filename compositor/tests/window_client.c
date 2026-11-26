@@ -60,7 +60,10 @@
 
 #define WIDTH 200
 #define HEIGHT 120
-#define PANEL_H 40
+#define PANEL_H 40       /* what a bar asks to be, in pixels of screen */
+#define POPUP_W 120      /* a menu is sized by the client that opens it */
+#define POPUP_H 100
+#define POPUP_GAP 60     /* how far below the window's edge to ask for it */
 
 /* One screen, as the output manager describes it. Only the name and the place
  * are kept, which is all the commands and the lines printed about them need. */
@@ -97,7 +100,8 @@ struct client {
 	int idle_ms;
 
 	/* A menu, and where the desktop put it. */
-	struct xdg_surface *popup_surface;
+	struct xdg_surface *popup_xdg;
+	struct wl_surface *popup_wl;
 	struct xdg_popup *popup;
 
 	/* --panel: one layer surface, and whether the desktop has sized it yet. */
@@ -215,10 +219,21 @@ static void popup_repositioned(void *data, struct xdg_popup *popup, uint32_t tok
 }
 
 static void popup_surface_configure(void *data, struct xdg_surface *surface, uint32_t serial) {
-	/* A menu is a surface too, and owes the same answer. What it is painted with
-	 * is the client's own business; where the desktop put it is the answer this
-	 * client exists to print, and that comes on the popup itself. */
+	struct client *client = data;
 	xdg_surface_ack_configure(surface, serial);
+	/* The same rule as a window's, and for the same reason: the first commit of
+	 * an xdg_surface says "ask me" and carries nothing, and a buffer in it is an
+	 * error the desktop answers by ending the connection - `xdg_surface has never
+	 * been configured`, which is what this order was paid for. What a menu is
+	 * painted with is the client's own business; where the desktop put it is the
+	 * answer this client exists to print, and that comes on the popup itself. */
+	if (!client->popup_shown) {
+		if (paint(client, client->popup_wl, &client->popup_buffer, "menu painted",
+				POPUP_W, POPUP_H, &client->popup_shown) < 0) {
+			client->failed = 1;
+			client->running = 0;
+		}
+	}
 }
 
 static void popup_configure(void *data, struct xdg_popup *popup, int32_t x, int32_t y,
@@ -249,10 +264,6 @@ static const struct xdg_popup_listener popup_listener = {
 /* Open the menu below the window's bottom-left corner, a screen's height down
  * from it: far enough out that only a desktop that pays attention to the screen
  * edge can put it back where it belongs. */
-#define POPUP_W 120
-#define POPUP_H 100
-#define POPUP_GAP 60
-
 static void open_popup(struct client *client) {
 	struct xdg_positioner *positioner = xdg_wm_base_create_positioner(client->wm_base);
 	xdg_positioner_set_size(positioner, POPUP_W, POPUP_H);
@@ -262,27 +273,21 @@ static void open_popup(struct client *client) {
 	 * rectangle to be told at all - xdg-shell answers a positioner without one
 	 * with a protocol error rather than a menu. From here on, only a desktop that
 	 * looks at the screen edge has a reason to send the number back smaller. */
-	xdg_positioner_set_anchor_rect(positioner, 0, 0, (uint32_t)client->width,
-		(uint32_t)client->height);
+	xdg_positioner_set_anchor_rect(positioner, 0, 0, client->width, client->height);
 	xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_BOTTOM);
 	xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_TOP);
 	xdg_positioner_set_offset(positioner, 0, POPUP_GAP);
 	/* A menu is a surface of its own, with its own xdg_surface - the popup is
-	 * what says whose it is. */
-	struct wl_surface *surface = wl_compositor_create_surface(client->compositor);
-	client->popup_surface = xdg_wm_base_get_xdg_surface(client->wm_base, surface);
-	client->popup = xdg_surface_get_popup(client->popup_surface, client->xdg_surface,
-		positioner);
+	 * what says whose it is. Unlike a window, it is sized by the client that
+	 * opens it; like one, its first commit carries nothing, and the buffer comes
+	 * after the answer is acknowledged - which is what `popup_surface_configure`
+	 * below does. */
+	client->popup_wl = wl_compositor_create_surface(client->compositor);
+	client->popup_xdg = xdg_wm_base_get_xdg_surface(client->wm_base, client->popup_wl);
+	client->popup = xdg_surface_get_popup(client->popup_xdg, client->xdg_surface, positioner);
 	xdg_popup_add_listener(client->popup, &popup_listener, client);
-	xdg_surface_add_listener(client->popup_surface, &popup_surface_listener, client);
-	/* Unlike a window, a menu is sized by the client that opens it - and it has
-	 * to arrive with something painted on it, because a popup with no buffer is
-	 * never mapped and an unmapped popup is never placed. */
-	if (paint(client, surface, &client->popup_buffer, "menu painted", POPUP_W, POPUP_H,
-			&client->popup_shown) < 0) {
-		client->failed = 1;
-		client->running = 0;
-	}
+	xdg_surface_add_listener(client->popup_xdg, &popup_surface_listener, client);
+	wl_surface_commit(client->popup_wl);
 }
 
 /* ------------------------------------------------------------------ panel */
