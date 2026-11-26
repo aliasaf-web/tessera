@@ -15,6 +15,13 @@ fi
 cd "$src"
 if [ -d .git ]; then
 	printf '\n\033[1m==> Downloading the newest version\033[0m\n'
-	git pull --ff-only
+	if ! git pull --ff-only; then
+		echo
+		echo "Tessera could not be brought up to date: this folder has changes of"
+		echo "its own, or it is on another branch, so nothing was installed."
+		echo "Have a look, and ask someone to read this with you if it is unclear:"
+		echo "    cd $src && git status -sb"
+		exit 1
+	fi
 fi
 exec sh ./install.sh --update

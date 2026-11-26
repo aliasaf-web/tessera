@@ -237,6 +237,11 @@ you turned off, such as Bluetooth) stay that way.
   **Ctrl + Alt + F7** goes back to the desktop.
 - **The bar disappeared:** it restarts by itself within a few seconds. Its log is
   `~/.local/state/tessera/shell.log`.
+- **An update said nothing was new, and the version stayed the same:** the Tessera
+  folder is probably not on the branch that has the newer version. Look with
+  `cd ~/tessera && git status -sb` (the first word after `##` is the branch);
+  `git checkout main && git pull` and run `tessera-update` again. If the folder has
+  changes of your own in it, ask whoever made them before throwing anything away.
 - **Wi-Fi doesn't connect after installing:** click the clock, then the arrow next
   to Wi-Fi, choose your network and type the password again.
 - **Remove Tessera:** `cd ~/tessera && sh uninstall.sh`
