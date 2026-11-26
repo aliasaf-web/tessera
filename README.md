@@ -271,10 +271,21 @@ and tested (see `.github/workflows/checks.yml`). To run the same checks on your
 computer, from the `tessera` folder:
 
 ```sh
-meson setup build compositor && meson test -C build   # window manager
-python3 -m unittest discover -s tests                 # shell
-flake8 shell tools tests                              # Python style
+meson setup build compositor && ninja -C build  # build the window manager
+meson test -C build --print-errorlogs           # buffers, the config file, idle
+python3 -m unittest discover -s tests           # the shell, and the desktop
+flake8 shell tools tests                        # Python style
 ```
+
+Most of what `python3 -m unittest` runs needs only Python. Two files go
+further: `tests/test_contract.py` reads the C sources and the Python sources
+and checks the words they exchange still match (key actions, event names, the
+commands `tessera msg` accepts), and `tests/test_compositor.py` starts the
+window manager you just built on a headless backend - no screen, no graphics
+driver - and drives it over its control socket the way the bar does. It skips
+itself when nothing has been built, and `TESSERA=/path/to/tessera` points it
+at a different build. The sanitiser job runs the first two again with
+AddressSanitizer and UndefinedBehaviorSanitizer turned on.
 
 The keyboard shortcuts are listed once, in `shell/tessera_shell/shortcuts.py`.
 After changing them, run `python3 tools/update-readme.py` to update the tables

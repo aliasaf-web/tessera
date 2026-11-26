@@ -496,8 +496,8 @@ int ipc_client_main(int argc, char **argv) {
 	if (argc < 1) {
 		fprintf(stderr, "Usage: tessera msg COMMAND [ARGUMENT]\n"
 			"Commands: workspace N|next|prev [SCREEN], move-to-workspace N, focus ID, exec CMD,\n"
-			"          close, fullscreen, float, lock, reload, logout, state, outputs, subscribe,\n"
-			"          dpms on|off, night-light on|off|toggle, help\n");
+			"          close, fullscreen, float, lock, reload, logout, exit, state, outputs,\n"
+			"          subscribe, version, dpms on|off, night-light on|off|toggle, help\n");
 		return 1;
 	}
 	/* The request is one line: the words separated by spaces. */
