@@ -311,12 +311,22 @@ commands `tessera msg` accepts), and `tests/test_compositor.py` starts the
 window manager you just built on a headless backend - no screen, no graphics
 driver - and drives it over its control socket the way the bar does. It skips
 itself when nothing has been built, and `TESSERA=/path/to/tessera` points it
-at a different build. It can also put a window *inside* that desktop:
+at a different build. It can also put things *inside* that desktop:
 `compositor/tests/window_client.c` is built beside `tessera` as
-`tessera-test-window`, mapping one window that prints a line per event, and
-`--globals` listing what the desktop advertises to whoever asks. That is how
-tiling a real window, closing one from the socket, and what the lock screen
-hides from a program started behind it get checked rather than only read. The sanitiser job runs the first two again with
+`tessera-test-window`, in four modes — `--globals` listing what the desktop
+advertises to whoever asks, `--window` mapping one window and printing the size
+it is asked for, `--panel` mapping a bar and printing the room it is given, and
+`--drive-outputs` holding the screen tools so a test can move a screen the way
+`wlr-randr` does. Commands on its standard input ask for the rest: a menu below
+the window, its size repeated on request, the screens' places, a move tried out
+before it is applied.
+
+That is how tiling a real window, a bar's share of the screen, a menu kept on
+it, closing a window from the socket, and what the lock screen hides from a
+program started behind it get checked rather than only read. What no test here
+can see is *where* a window ends up on a screen: a Wayland client is told how
+big to be and never where it is, so a moved screen is checked by which screen a
+window is counted on. The sanitiser job runs the first two again with
 AddressSanitizer and UndefinedBehaviorSanitizer turned on.
 
 A red run does not need the Actions log to be understood: `tools/ci-annotate.py`
