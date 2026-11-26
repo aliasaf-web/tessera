@@ -30,12 +30,17 @@
  * it, and installed nowhere.
  *
  * Two habits here were paid for on the CI machine, the only one that can compile
- * this file. Listeners use designated initialisers, because how many events a
- * protocol object has and in what order is the generated header's business, and
- * a struct with one too many is an error nothing here can see first. And objects
- * the compositor may take back are left alone rather than destroyed: this client
- * is going to exit anyway, and a request sent to an id the compositor has
- * already released is a protocol error blamed on us. */
+ * this file, and both are about the same trap: what a protocol object's events
+ * are is the generated header's business, not this file's. Listeners use
+ * designated initialisers, because a struct in the wrong order or with one too
+ * many is a compile error nothing here can see first. And every listener covers
+ * *all* the events of the version it bound, filling in do-nothing functions for
+ * the ones it does not care about - libwayland checks that on the spot and aborts
+ * the client, which is a worse failure than a warning, because it says only
+ * which opcode was left out. Objects the compositor may take back are left alone
+ * rather than destroyed: this client is going to exit anyway, and a request sent
+ * to an id the compositor has already released is a protocol error blamed on
+ * us. */
 
 #define _GNU_SOURCE
 #include <stdarg.h>
@@ -211,8 +216,16 @@ static const struct xdg_surface_listener popup_surface_listener = {
 	.configure = popup_surface_configure,
 };
 
+/* The compositor is done with the menu - the client dismissed it, or it was
+ * asked for a parent that went away. Named `menu` rather than `popup` so that a
+ * test waiting on the placement line cannot mistake this for one. */
+static void popup_done(void *data, struct xdg_popup *popup) {
+	say("menu done\n");
+}
+
 static const struct xdg_popup_listener popup_listener = {
 	.configure = popup_configure,
+	.popup_done = popup_done,
 };
 
 /* Open the menu below the window's bottom-left corner, a screen's height down
@@ -327,9 +340,45 @@ static void head_finished(void *data, struct zwlr_output_head_v1 *head) {
 	}
 }
 
+/* libwayland will not let a client leave a hole in a listener struct: for every
+ * event the version it bound can be sent, there has to be a function there, and
+ * a missing one is `listener function for opcode N of ... is NULL` and an
+ * abort - paid for here the first time a head arrived, with three lines of
+ * reason and no window in the desktop to show for it. So the eight events below
+ * that this client has no use for are answered by things that do nothing, which
+ * is also what they are for: the name and the place are the whole of what a test
+ * here needs, and the compositor is allowed to say the rest whenever it likes. */
+static void head_nothing(void *data, struct zwlr_output_head_v1 *head) {
+}
+
+static void head_nothing_string(void *data, struct zwlr_output_head_v1 *head,
+		const char *text) {
+}
+
+static void head_nothing_size(void *data, struct zwlr_output_head_v1 *head, int32_t width,
+		int32_t height) {
+}
+
+static void head_nothing_number(void *data, struct zwlr_output_head_v1 *head, int32_t number) {
+}
+
+static void head_nothing_mode(void *data, struct zwlr_output_head_v1 *head,
+		struct zwlr_output_mode_v1 *mode) {
+}
+
+static void head_nothing_fixed(void *data, struct zwlr_output_head_v1 *head, wl_fixed_t scale) {
+}
+
 static const struct zwlr_output_head_v1_listener head_listener = {
 	.name = head_name,
+	.description = head_nothing_string,
+	.physical_size = head_nothing_size,
+	.mode = head_nothing_mode,
+	.enabled = head_nothing_number,
+	.current_mode = head_nothing_mode,
 	.position = head_position,
+	.transform = head_nothing_number,
+	.scale = head_nothing_fixed,
 	.finished = head_finished,
 };
 
@@ -656,9 +705,17 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 	} else if (strcmp(interface, zwlr_output_manager_v1_interface.name) == 0) {
 		/* Held back while the screen is locked, so this can be NULL - which the
 		 * commands answer to themselves, rather than the client giving up on a
-		 * desktop that is only shut for the moment. */
+		 * desktop that is only shut for the moment.
+		 *
+		 * Version 1, deliberately, although the desktop offers 4: the requests
+		 * this client makes (a configuration, a head in it, a mode, a place)
+		 * are all of the first version, and a lower version is the one place a
+		 * client can say which events it is willing to be asked about. The head
+		 * listener below covers the ten events of version 1; versions 2 and 4
+		 * add four more, and a client that bound 4 would have to answer those
+		 * too, in code that could never be anything but empty. */
 		client->output_manager = wl_registry_bind(registry, name,
-			&zwlr_output_manager_v1_interface, version < 4 ? version : 4);
+			&zwlr_output_manager_v1_interface, version < 1 ? version : 1);
 		if (client->output_manager != NULL) {
 			zwlr_output_manager_v1_add_listener(client->output_manager, &manager_listener,
 				client);
