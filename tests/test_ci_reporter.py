@@ -89,6 +89,16 @@ class BuildReports(unittest.TestCase):
         out = "\n".join(ci_annotate.annotations(line + "\ncompiling it again\n\n" + line))
         self.assertEqual(out.count("unused variable"), 1, out)
 
+    def test_an_error_in_the_middle_of_a_long_log_is_still_found(self):
+        # Two build modes, several targets, and the one line that matters somewhere
+        # in the middle of it - which is why the search is over the log and not
+        # over its last few lines.
+        log = "\n".join(f"[{n}/40] Compiling C object tessera.p/src_{n}.c.o" for n in range(1, 40))
+        log += "\ncompositor/src/view.c:7:3: error: 'x' undeclared (first use in this function)\n"
+        log += "\n".join(f"[{n}/40] Linking target step {n}" for n in range(40, 80))
+        out = "\n".join(ci_annotate.annotations(log))
+        self.assertIn("'x' undeclared", out)
+
     def test_a_log_with_nothing_in_it_says_that(self):
         out = "\n".join(ci_annotate.annotations("   \n"))
         self.assertIn("nothing was written to a log", out)

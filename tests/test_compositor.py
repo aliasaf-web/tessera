@@ -495,6 +495,28 @@ class TestWindow:
                       f"it said {process.seen}")
         return seen()
 
+    def settled(self, process, seconds=20):
+        """The size the client was last told to be, once it stops being told
+        others.
+
+        This desktop arranges a window and then takes its own titlebar off the
+        answer, so a single configure is not the last word: a test that reads the
+        first one it sees reads a number that was about to change. Waiting for it
+        to stop changing is the only honest way to ask what a window ended up
+        being, and it makes the assertions below about the desktop rather than
+        about how fast the runner happens to be.
+        """
+        deadline = time.monotonic() + seconds
+        last = None
+        while time.monotonic() < deadline:
+            sizes = self.configure_sizes(process.seen)
+            current = sizes[-1] if sizes else None
+            if current is not None and current == last:
+                return current
+            last = current
+            time.sleep(0.4)
+        return last
+
     def stop(self, process):
         """Ends a client and waits, so a test that looks at the desktop
         afterwards is not competing with a window that is still closing."""
@@ -549,16 +571,18 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
         self.assertEqual(empty["title"], "")
         process, lines = self.window()
 
-        # The size the client paints is the size the desktop asked for, not the
-        # one it would have liked: that is the whole of a tiling compositor.
-        configured = self.configure_sizes(process.seen)
-        self.assertTrue(configured,
-                        f"the desktop sized the window without saying so: {lines}")
-        configured = configured[-1]
-        wanted = f"{configured[0]}x{configured[1]}"
+        # The size the client paints is one the desktop asked for, not the one it
+        # would have liked: that is the whole of a tiling compositor. It is not
+        # necessarily the last word yet - the desktop shrinks the window again for
+        # its own titlebar a moment later - so this checks the set it chose from.
+        asked = self.configure_sizes(process.seen)
+        self.assertTrue(asked, f"the desktop sized the window without saying so: {lines}")
         mapped = [line.split()[1] for line in lines if line.startswith("mapped ")]
-        self.assertEqual(mapped, [wanted],
-                         f"the window painted something other than what it was told: {lines}")
+        self.assertEqual(len(mapped), 1, f"the window painted twice before settling: {lines}")
+        self.assertIn(mapped[0], [f"{width}x{height}" for width, height in asked],
+                      f"the window painted a size it was never told: {lines}")
+        self.assertNotEqual(mapped[0], "200x120",
+                            "the desktop left the window the size it came in with")
 
         def shown():
             state = self.state()
@@ -610,32 +634,33 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
         again rather than left the size it was.
         """
         first, _lines = self.window()
-        one_window = self.configure_sizes(self.expect(first, "configure"))[-1]
+        only = self.settled(first)
         second, _lines = self.window("--app-id", "second", "--title", "Second")
-        both = self.configure_sizes(self.expect(second, "configure"))
-        self.assertLess(both[-1][0] * both[-1][1], one_window[0] * one_window[1],
-                        f"two windows did not share the screen: {one_window} then {both}")
-        resized = self.configure_sizes(self.expect(first, "configure", count=2))
-        self.assertLess(resized[-1][0] * resized[-1][1], one_window[0] * one_window[1],
-                        f"the first window kept its size when the second arrived: {resized}")
-        # The desktop arranges once and configures both in that pass, so by the
-        # time the first window has been told, the second has been too.
-        self.assertEqual(resized[-1], self.configure_sizes(second.seen)[-1],
-                         "the two windows were not given the same shape")
+        second_size = self.settled(second)
+        first_size = self.settled(first)
+        self.assertLess(second_size[0] * second_size[1], only[0] * only[1],
+                        f"the second window was not told to share the screen: {second_size} "
+                        f"of {only}")
+        self.assertLess(first_size[0] * first_size[1], only[0] * only[1],
+                        f"the first window kept its size when the second arrived: {first_size}")
+        self.assertEqual(first_size, second_size, "the two windows were not given the same shape")
 
     def test_fullscreen_leaves_the_size_it_found(self):
         """Coming back out of fullscreen is a promise about the size, not about
         the paint job: a window that returns to a *different* place than it left
         is the same bug as a screen mode change that snaps it to (0,0)."""
         process, _lines = self.window()
-        before = self.configure_sizes(self.expect(process, "configure"))[-1]
+        before = self.settled(process)
+        seen = len(self.configure_sizes(process.seen))
         self.ask("fullscreen")
-        self.expect(process, "configure", count=2)
+        # The desktop has to say something about the toggle, whatever it decides
+        # the size should be: the client prints every configure it is given.
+        self.expect(process, "configure", count=seen + 1)
         self.ask("fullscreen")
-        restored = self.expect(process, "configure", count=3)
-        self.assertEqual(self.configure_sizes(restored)[-1], before,
+        self.expect(process, "configure", count=seen + 2)
+        self.assertEqual(self.settled(process), before,
                          f"leaving fullscreen did not restore the size: was {before}, "
-                         f"the client says {self.configure_sizes(restored)}")
+                         f"the client says {self.configure_sizes(process.seen)}")
 
 
 class WhatTheLockTakesAway(TestWindow, DesktopMixin, unittest.TestCase):

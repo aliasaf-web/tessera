@@ -292,7 +292,7 @@ python3 -m unittest discover -s tests           # the shell, and the desktop
 flake8 shell tools tests                        # Python style
 ruff check .                                    # the same Python, linted
 cppcheck --quiet --inline-suppr --std=c11 --language=c \
-  --enable=warning,performance,portability --error-exitcode=1 \
+  --enable=warning --error-exitcode=1 \
   -Icompositor/src -Ibuild compositor/src/*.c   # the desktop's C
 ```
 

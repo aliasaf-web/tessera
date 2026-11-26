@@ -109,7 +109,7 @@ def annotations(text):
     # complaint is worth more than the tail of a log - and for a build, the tail
     # is mostly ninja naming the files it got through.
     tail = text.strip().splitlines()[-30:]
-    complaints = build_reports("\n".join(tail) if tail else text)
+    complaints = build_reports(text)
     if complaints:
         kept = [line for line in tail[-8:] if line not in complaints]
         lines = complaints + (["", "last lines:"] + kept if kept else [])
