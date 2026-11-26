@@ -803,7 +803,8 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
         overlay, _lines = self.panel()
         self.expect(overlay, "panel ")
         self.assertEqual(self.asked_size(process), alone,
-                         "a panel with no exclusive zone took room from a window")
+                         f"a panel with no exclusive zone took room from a window\n"
+                         f"{self.output()}")
 
     def test_a_menu_asked_below_the_bottom_edge_is_kept_on_the_screen(self):
         """A menu's place is the client's to ask for and the desktop's to allow.
