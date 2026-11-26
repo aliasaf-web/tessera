@@ -175,17 +175,16 @@ static const struct wl_registry_listener registry_listener = {
 static void xdg_surface_configure(void *data, struct xdg_surface *surface, uint32_t serial) {
 	struct client *client = data;
 	/* Nothing is drawn before this answer, which is the whole of xdg-shell's
-	 * rule about the first configure as well as about later ones. */
+	 * rule about the first configure as well as about later ones. It is also
+	 * the only event xdg_surface has: the listeners for the ones with more of
+	 * them are one or two lines longer, and the compiler is the only thing that
+	 * tells you so. */
 	xdg_surface_ack_configure(surface, serial);
 	client->configure = serial;
 }
 
-static void xdg_surface_handle_destroy(void *data, struct xdg_surface *surface) {
-}
-
 static const struct xdg_surface_listener xdg_surface_listener = {
 	xdg_surface_configure,
-	xdg_surface_handle_destroy,
 };
 
 static void toplevel_configure(void *data, struct xdg_toplevel *toplevel, int32_t width,
@@ -202,12 +201,15 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel, int32_
 	if (height <= 0) {
 		height = HEIGHT;
 	}
+	/* Said whether or not it is news: a test reads these lines to know what the
+	 * desktop asked for, and one that agrees with the size the client came in
+	 * with is still the answer to what a fullscreen did to it. */
+	say("configure %dx%d\n", width, height);
 	if (width == client->width && height == client->height) {
 		return;
 	}
 	client->width = width;
 	client->height = height;
-	say("configure %dx%d\n", width, height);
 	if (client->shown) {
 		client->resize = 1;
 	}
