@@ -12,6 +12,23 @@
 /* Type dispatch                                                            */
 /* ---------------------------------------------------------------------- */
 
+/* Every wlr_scene_*_create() gives back NULL in exactly one situation - the
+ * allocator failed - and the caller immediately hangs a node off it or hands it
+ * as somebody else's parent. Carrying a window with half its scene into the next
+ * repaint is a crash with a confusing stack, so stop here with a line that says
+ * what ran out instead. There is nothing to undo: the client's surface belongs
+ * to the client, and freeing this view would leave the surface pointing at it.
+ * The other places that build scene nodes (the layers at start-up, the lock
+ * screen, a drag icon) are one-shot paths where a missing node means the same
+ * thing, so they were left as they were rather than dressed up. */
+static void *ts_scene_or_abort(void *node, const char *what) {
+	if (!node) {
+		wlr_log(WLR_ERROR, "Out of memory for the %s of a window", what);
+		abort();
+	}
+	return node;
+}
+
 const char *view_title(struct ts_view *view) {
 	const char *title = NULL;
 	if (view->type == TS_VIEW_XDG) {
@@ -574,26 +591,26 @@ struct ts_view *view_create_common(struct ts_server *server, enum ts_view_type t
 	view->id = ++server->next_view_id;
 	view->server = server;
 	view->type = type;
-	view->tree = wlr_scene_tree_create(server->layer_tiled);
+	view->tree = ts_scene_or_abort(wlr_scene_tree_create(server->layer_tiled), "window");
 	view->tree->node.data = &view->node;
 	wlr_scene_node_set_enabled(&view->tree->node, false);
 
 	float black[4] = {0, 0, 0, 1};
-	view->fs_bg = wlr_scene_rect_create(view->tree, 1, 1, black);
+	view->fs_bg = ts_scene_or_abort(wlr_scene_rect_create(view->tree, 1, 1, black), "background");
 	wlr_scene_node_set_enabled(&view->fs_bg->node, false);
-	view->frame = wlr_scene_tree_create(view->tree);
-	view->frame_bg = wlr_scene_rect_create(view->frame, 1, 1, black);
+	view->frame = ts_scene_or_abort(wlr_scene_tree_create(view->tree), "titlebar tree");
+	view->frame_bg = ts_scene_or_abort(wlr_scene_rect_create(view->frame, 1, 1, black), "titlebar");
 	for (int i = 0; i < 4; i++) {
-		view->edges[i] = wlr_scene_rect_create(view->frame, 1, 1, black);
+		view->edges[i] = ts_scene_or_abort(wlr_scene_rect_create(view->frame, 1, 1, black), "resize edge");
 		wlr_scene_node_set_enabled(&view->edges[i]->node, false);
 	}
-	view->titlebar = wlr_scene_buffer_create(view->frame, NULL);
-	view->content_tree = wlr_scene_tree_create(view->tree);
+	view->titlebar = ts_scene_or_abort(wlr_scene_buffer_create(view->frame, NULL), "titlebar text");
+	view->content_tree = ts_scene_or_abort(wlr_scene_tree_create(view->tree), "content");
 	for (int i = 0; i < 4; i++) {
-		view->corners[i] = wlr_scene_buffer_create(view->tree, NULL);
+		view->corners[i] = ts_scene_or_abort(wlr_scene_buffer_create(view->tree, NULL), "corner");
 		wlr_scene_node_set_enabled(&view->corners[i]->node, false);
 	}
-	view->popup_tree = wlr_scene_tree_create(server->layer_popups);
+	view->popup_tree = ts_scene_or_abort(wlr_scene_tree_create(server->layer_popups), "popups");
 	view->popup_tree->node.data = &view->node;
 	view->frame_dirty = true;
 	view->corners_dirty = true;

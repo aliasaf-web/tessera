@@ -88,6 +88,37 @@ executable(
 	install: true,
 )
 
+# A window for the desktop's own tests to look at, and a listing of what the
+# compositor offers whoever asks. The tests in tests/test_compositor.py run it:
+# without something inside the desktop, the parts that only show up when a client
+# is looking - tiling a window, taking an interface away while the screen is
+# locked, closing a window from the socket - can be read but not checked. Built
+# beside the window manager, and installed nowhere.
+wayland_client = dependency('wayland-client')
+xdg_shell_xml = protocols_dir / 'stable/xdg-shell/xdg-shell.xml'
+
+executable(
+	'tessera-test-window',
+	[
+		'tests/window_client.c',
+		custom_target(
+			'xdg-shell client header',
+			input: xdg_shell_xml,
+			output: 'xdg-shell-client-protocol.h',
+			command: [scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+		),
+		custom_target(
+			'xdg-shell client code',
+			input: xdg_shell_xml,
+			output: 'xdg-shell-protocol.c',
+			command: [scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+		),
+	],
+	dependencies: [wayland_client],
+	build_by_default: true,
+	install: false,
+)
+
 test('idle timing', executable('idle_test', 'tests/idle_test.c', build_by_default: false))
 test('reading settings', executable('config_test', 'tests/config_test.c', 'src/config_file.c',
 	dependencies: math, build_by_default: false),

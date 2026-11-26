@@ -22,7 +22,13 @@ static void output_frame(struct wl_listener *listener, void *data) {
 static void output_request_state(struct wl_listener *listener, void *data) {
 	struct ts_output *output = wl_container_of(listener, output, request_state);
 	const struct wlr_output_event_request_state *event = data;
-	wlr_output_commit_state(output->wlr_output, event->state);
+	/* Logging rather than checking: this is wlroots asking for a state a tool
+	 * requested, and the only answer to "the screen refused it" is to say so -
+	 * there is nothing to unwind, and the tool that asked reads the result back
+	 * from the output-management test itself. */
+	if (!wlr_output_commit_state(output->wlr_output, event->state)) {
+		wlr_log(WLR_ERROR, "%s refused the mode it was asked for", output->wlr_output->name);
+	}
 	if (output->in_layout) {
 		arrange_layers(output);
 	}
@@ -80,6 +86,16 @@ static void output_join_layout(struct ts_output *output) {
 	output->in_layout = true;
 	struct wlr_output_layout_output *l_output =
 		wlr_output_layout_add_auto(server->output_layout, output->wlr_output);
+	/* A screen in the layout but not in the scene is one that never paints,
+	 * which is worse to debug than a desktop that stops and says which screen it
+	 * could not set up. `wlr_output_layout_add_auto` gives back NULL only when
+	 * the allocator failed, and the scene call below would dereference it, so
+	 * this is the last point where anything sensible is left to do. (The scene
+	 * call itself has nothing to check: it aborts on the same failure.) */
+	if (!l_output) {
+		wlr_log(WLR_ERROR, "Out of memory putting %s in the desktop", output->wlr_output->name);
+		abort();
+	}
 	wlr_scene_output_layout_add_output(server->scene_layout, l_output, output->scene_output);
 	wlr_scene_node_set_enabled(&output->background->node, true);
 }
@@ -243,7 +259,12 @@ static void output_switch_on(struct ts_output *output, double scale) {
 		wlr_log(WLR_ERROR, "%s can't use the chosen mode; using its own", wlr_output->name);
 		if (preferred && preferred != mode) {
 			wlr_output_state_set_mode(&state, preferred);
-			wlr_output_commit_state(wlr_output, &state);
+			/* The screen's own preferred mode is the last thing left to try; if
+			 * that is refused too there is no setting to fall back to, so say it
+			 * and let the output carry on in whatever state it is in. */
+			if (!wlr_output_commit_state(wlr_output, &state)) {
+				wlr_log(WLR_ERROR, "%s refused even its preferred mode", wlr_output->name);
+			}
 		}
 	}
 	wlr_output_state_finish(&state);
@@ -257,7 +278,12 @@ static void output_switch_off(struct ts_output *output) {
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 	wlr_output_state_set_enabled(&state, false);
-	wlr_output_commit_state(output->wlr_output, &state);
+	/* The caller has already decided the screen is dark - DPMS and the sleep
+	 * path both count on it - so a refusal is worth a line: it is the only sign
+	 * that a laptop lid closed over a screen still lit and still drawing. */
+	if (!wlr_output_commit_state(output->wlr_output, &state)) {
+		wlr_log(WLR_ERROR, "%s would not turn off", output->wlr_output->name);
+	}
 	wlr_output_state_finish(&state);
 }
 

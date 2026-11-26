@@ -1,0 +1,31 @@
+# Ruff over the Python: the shell, the tools and the tests.
+#
+# The project's own limit is flake8's 100 columns, which `ruff check` does not
+# read from setup.cfg, so the same line length is set here and both linters are
+# run in CI. The rules kept are the ones that have caught something in this
+# code: a name bound and never used, an import nobody needs, comparison to a
+# bare True, f-strings with nothing in them, and the like. Formatting is left to
+# someone else's taste: ruff format is not used here, only the checks.
+line-length = 100
+target-version = "py39"
+
+
+[lint]
+# The codes flake8 enforces and ruff does not, so that a `# noqa: E402` comment
+# which flake8 needs is not called spare by ruff.
+external = ["E402"]
+select = [
+	"F",      # pyflakes: unused names, undefined names, duplicate keys
+	"E",      # pycodestyle errors, including the line length above
+	"W",      # whitespace that makes a diff noisy
+	"B006",   # a mutable default argument
+	"B008",   # a function call in a default argument
+	"C4",     # comprehensions written the long way round
+	"SIM2",   # a boolean comparison that says less than it means
+	"RUF100", # a noqa comment nobody needs any more
+]
+
+[lint.per-file-ignores]
+# The tests name a helper `fake` and pass `lambda: None` around on purpose, and
+# they are written to be read top to bottom inside a single file.
+"tests/*" = ["B008"]

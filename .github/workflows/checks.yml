@@ -55,6 +55,23 @@ jobs:
           meson setup build compositor -Dwerror=true
           ninja -C build
 
+      # The other checks in this job compare files with each other; this one
+      # reads the desktop's C. It runs after the build, where wlroots' headers
+      # are installed and the protocol headers this project generates exist, so
+      # what it says is about this code rather than about context it could not
+      # find. A finding is worth fixing or saying something about, so it fails
+      # the job; `// cppcheck-suppress id` next to a line that knows better.
+      - name: Static analysis of the desktop
+        run: |
+          apt-get install -y --no-install-recommends cppcheck
+          cppcheck --version
+          cppcheck --quiet --inline-suppr --std=c11 --language=c \
+            --enable=warning,performance,portability --error-exitcode=1 \
+            -DWLR_USE_UNSTABLE -Icompositor/src -Ibuild \
+            $(pkg-config --cflags wlroots-0.18 pixman-1 libdrm wayland-server xkbcommon) \
+            $(find compositor/src -name '*.c') 2>&1 \
+            | tee "${RUNNER_TEMP:-/tmp}/cppcheck.log"
+
       - name: Window manager tests
         run: |
           meson test -C build --print-errorlogs 2>&1 \
@@ -70,6 +87,18 @@ jobs:
 
       - name: Python style
         run: flake8 shell tools tests 2>&1 | tee "${RUNNER_TEMP:-/tmp}/style.log"
+
+      # flake8 has had no release since 2023, so the same Python is checked with a
+      # maintained linter too - a name used before it is bound, a condition that
+      # can only be true. From PyPI rather than apt, because the Debian package
+      # lags by enough to disagree about which rules exist: the ones kept are in
+      # ruff.toml at the top of the tree.
+      - name: Python lint
+        run: |
+          apt-get install -y --no-install-recommends python3-pip
+          python3 -m pip install --quiet --break-system-packages ruff
+          ruff --version
+          ruff check . 2>&1 | tee "${RUNNER_TEMP:-/tmp}/lint.log"
 
       - name: Shell scripts
         run: |

@@ -98,8 +98,10 @@ static bool filter_global(const struct wl_client *client, const struct wl_global
 		void *data) {
 	struct ts_server *server = data;
 	/* While the screen is locked, nothing that starts now may watch the screen,
-	 * read the clipboard or rearrange the monitors: the bind waits until the
-	 * screen opens again. A program that was already running keeps what it took
+	 * read the clipboard or rearrange the monitors: those names are not in the
+	 * list a new client is given, so it never learns they exist. Nothing queues
+	 * the bind for later - the interface simply reappears with the desktop.
+	 * A program that was already running keeps what it took
 	 * before the lock - taking a capability away from something already connected
 	 * is not something a compositor can do without killing it, so the README says
 	 * what the lock screen does and does not defend against instead of promising

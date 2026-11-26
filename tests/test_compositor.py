@@ -25,6 +25,7 @@ import glob
 import json
 import os
 import pathlib
+import select
 import shutil
 import signal
 import socket
@@ -35,6 +36,10 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BINARY = os.environ.get("TESSERA") or str(ROOT / "build" / "tessera")
+# The little client the window manager's project builds beside it: one window,
+# and a list of what the desktop offers. A test that needs a window in the
+# desktop asks for this one, and skips itself when the build did not happen.
+CLIENT = os.path.join(os.path.dirname(BINARY), "tessera-test-window")
 
 # A first run in a container is slow; nothing here needs more than a moment.
 WAIT_SECONDS = 30
@@ -424,6 +429,258 @@ class Locked(DesktopMixin, unittest.TestCase):
         # where the screens are handed back on, so check it ends without a
         # crash (tearDownClass looks at how it exited).
         self.assertIsNone(self.desktop.poll())
+
+
+class TestWindow:
+    """The one window, started and read by the tests below.
+
+    It is a real Wayland client rather than a mock, because the things these
+    tests care about only happen on the other side of the socket: what the
+    desktop asks a window to be sized like, which interfaces it offers to a
+    program that connects while the screen is locked, and whether a window that
+    is closed from the control socket really goes away. The client prints one
+    line per event and flushes it, so a test reads lines rather than guessing.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        if not os.path.isfile(CLIENT):
+            raise unittest.SkipTest(f"needs the test window built (no {CLIENT})")
+
+    def display(self):
+        """This desktop's Wayland display name, from the control socket beside
+        it: the window manager names the two together, and a client needs the
+        first while the tests here talk over the second."""
+        name = os.path.basename(self.env["TESSERA_SOCK"])
+        return name.removesuffix(".sock").removeprefix("tessera-")
+
+    def window(self, *extra, wait_for="mapped"):
+        """Starts the client and waits until it says it has a window."""
+        env = dict(self.env, WAYLAND_DISPLAY=self.display())
+        # The client gives up on its own after a minute, so a test that stops
+        # reading cannot leave a window in the desktop for the classes after it;
+        # every wait below is shorter than that.
+        process = subprocess.Popen(
+            [CLIENT, "--window", "--idle-ms", "60000", *extra],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+        self.processes.append(process)
+        lines = self.read_lines(process, wait_for)
+        if not any(line.startswith(wait_for) for line in lines):
+            self.fail(f"the test window never said {wait_for!r}; it said {lines}")
+        return process, lines
+
+    @staticmethod
+    def read_lines(process, want, seconds=25):
+        """Everything the client wrote, up to and including a line that starts
+        with `want`. Lines already read are kept, so a test can look back."""
+        seen = getattr(process, "seen", None)
+        if seen is None:
+            seen = process.seen = []
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if any(line.startswith(want) for line in seen):
+                return seen
+            ready, _, _ = select.select([process.stdout], [], [], 0.2)
+            if not ready:
+                if process.poll() is not None:
+                    break
+                continue
+            line = process.stdout.readline()
+            if not line:
+                break
+            seen.append(line.strip())
+        return seen
+
+    def stop(self, process):
+        """Ends a client and waits, so a test that looks at the desktop
+        afterwards is not competing with a window that is still closing."""
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=20)
+
+    def teardown_windows(self):
+        for process in getattr(self, "processes", []):
+            self.stop(process)
+
+
+class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
+    """What the bar can see when there is something for it to see.
+
+    Every assertion here is about the pair - the desktop and a client that
+    answers it - because each half looks right alone: a state line can list a
+    window that was never configured, and a window can be mapped while the
+    desktop counts nothing.
+    """
+
+    screens = "1"
+
+    def setUp(self):
+        self.processes = []
+        self.addCleanup(self.teardown_windows)
+
+    def test_a_window_shows_up_where_the_bar_looks(self):
+        empty = self.state()
+        self.assertEqual(empty["occupied"], [], "the desktop started with windows in it")
+        self.assertEqual(empty["title"], "")
+        process, lines = self.window()
+
+        # The size the client paints is the size the desktop asked for, not the
+        # one it would have liked: that is the whole of a tiling compositor.
+        configured = self.configure_sizes(lines)
+        mapped = [line.split()[1] for line in lines if line.startswith("mapped ")]
+        wanted = f"{configured[-1][0]}x{configured[-1][1]}"
+        self.assertEqual(mapped, [wanted],
+                         f"the window painted something other than what it was told: {lines}")
+
+        def shown():
+            state = self.state()
+            return state["occupied"] == [1] and state["title"] == "Tessera test window"
+        if not until(shown):
+            self.fail(f"the desktop never counted the window; it says {self.state()}\n"
+                      f"{self.output()}")
+        self.assertEqual(self.state()["app_id"], "tessera-test-window")
+
+    def test_a_title_the_client_chose_is_a_title_the_bar_shows(self):
+        self.window("--title", "Blue rectangle", "--app-id", "renamed")
+        if not until(lambda: self.state()["title"] == "Blue rectangle"):
+            self.fail(f"the desktop did not use the window's own title: {self.state()}")
+        self.assertEqual(self.state()["app_id"], "renamed")
+
+    def test_the_desktop_moves_it_and_the_bar_follows(self):
+        self.window()
+        self.ask("move-to-workspace", "3")
+        if not until(lambda: self.state()["occupied"] == [3]):
+            self.fail(f"the window did not move to workspace 3; the desktop says "
+                      f"{self.state()}\n{self.output()}")
+        # Whether the desktop follows a window to its new workspace or stays
+        # where it was, the window is on 3 and nowhere else has it - which is
+        # the half that a state line built from the focused view can get wrong.
+        self.ask("workspace", "1")
+        if not until(lambda: self.state()["occupied"] == [] and self.state()["title"] == ""):
+            self.fail(f"workspace 1 still shows the window: {self.state()}")
+        self.ask("workspace", "3")
+        if not until(lambda: self.state()["title"] == "Tessera test window"):
+            self.fail(f"the title did not come back with the workspace: {self.state()}")
+
+    def test_closing_it_from_the_socket_takes_it_with_it(self):
+        process, _lines = self.window()
+        self.ask("close")
+        lines = self.read_lines(process, "closed", seconds=20)
+        self.assertIn("closed", lines, f"the window was never told to close: {lines}")
+        if not until(lambda: self.state()["occupied"] == []):
+            self.fail(f"the desktop still has a window after closing it: {self.state()}")
+
+    def test_two_windows_share_the_screen(self):
+        """The tiling maths in `layout.c`, seen from the side a client can check.
+
+        `compositor/tests/tile_test.c` works the geometry out for N windows on
+        one screen; what nothing checked until now is that the answer reaches the
+        windows - that the second one is asked to be smaller, and the first is
+        told again rather than left the size it was.
+        """
+        first, lines = self.window()
+        one_window = self.configure_sizes(lines)[-1]
+        _second, second_lines = self.window("--app-id", "second", "--title", "Second")
+        both = self.configure_sizes(second_lines)
+        self.assertTrue(both, f"the second window was never configured: {second_lines}")
+        self.assertLess(both[-1][0] * both[-1][1], one_window[0] * one_window[1],
+                        f"two windows did not share the screen: {one_window} then {both}")
+        if not until(lambda: len(self.configure_sizes(first)) > 1):
+            self.fail(f"the first window was never told about the second: {first.seen}")
+        self.assertEqual(self.configure_sizes(first)[-1], both[-1],
+                         "the two windows were not given the same shape")
+
+    def test_fullscreen_leaves_the_size_it_found(self):
+        """Coming back out of fullscreen is a promise about the size, not about
+        the paint job: a window that returns to a *different* place than it left
+        is the same bug as a screen mode change that snaps it to (0,0)."""
+        process, lines = self.window()
+        before = self.configure_sizes(lines)[-1]
+        self.ask("fullscreen")
+        self.ask("fullscreen")
+
+        def restored():
+            sizes = self.configure_sizes(process)
+            return bool(sizes) and sizes[-1] == before
+
+        if not until(restored):
+            self.fail(f"leaving fullscreen did not restore the size: was {before}, "
+                      f"the client says {self.configure_sizes(process)}")
+
+    @staticmethod
+    def configure_sizes(source):
+        """Every `configure WxH` the client printed, as (width, height) pairs.
+
+        Takes the process or its lines: a client keeps what it has said, so a
+        test can watch one grow while it waits for the other to follow.
+        """
+        lines = source if isinstance(source, list) else source.seen
+        sizes = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) == 2 and parts[0] == "configure" and "x" in parts[1]:
+                width, _, height = parts[1].partition("x")
+                sizes.append((int(width), int(height)))
+        return sizes
+
+
+class WhatTheLockTakesAway(TestWindow, DesktopMixin, unittest.TestCase):
+    """The interfaces a program sees, before and after the screen is locked.
+
+    The lock works by not offering them at all, rather than by refusing each
+    request, so the only honest test is to ask a client what it can see. What it
+    cannot be tested doing is taking them back from something that had them
+    already - see the note in `filter_global()` and the README - so this stops at
+    the boundary the code actually holds.
+    """
+
+    screens = "1"
+
+    def setUp(self):
+        self.processes = []
+        self.addCleanup(self.teardown_windows)
+
+    def globals_of(self):
+        """The interfaces this desktop advertises, as names."""
+        done = subprocess.run([CLIENT, "--globals"], capture_output=True, text=True,
+                              env=dict(self.env, WAYLAND_DISPLAY=self.display()), timeout=60,
+                              check=False)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        return [line.split()[1] for line in done.stdout.splitlines() if line.startswith("global ")]
+
+    def test_the_screen_tools_are_offered_and_then_not(self):
+        before = self.globals_of()
+        for name in ("zwlr_screencopy_manager_v1", "zwlr_data_control_manager_v1",
+                     "zwlr_output_manager_v1"):
+            self.assertIn(name, before, f"the desktop never offered {name} at all")
+
+        self.ask("lock")
+        self.wait_state(locked=True)
+        after = self.globals_of()
+        for name in ("zwlr_screencopy_manager_v1", "zwlr_export_dmabuf_manager_v1",
+                     "zwlr_data_control_manager_v1", "zwlr_output_manager_v1"):
+            self.assertNotIn(name, after, f"{name} is still on offer behind the lock screen")
+        # The window manager is still there, and so is the way to talk to it: a
+        # locked screen hides the desktop, it does not disconnect the session.
+        self.assertIn("wl_compositor", after)
+        self.assertIn("xdg_wm_base", after)
+
+    def test_a_window_that_was_up_stays_up_and_a_new_one_still_opens(self):
+        """Locking is not a logout: the apps keep running, and one that starts
+        now can still be opened (it simply cannot see or be seen)."""
+        process, _ = self.window()
+        self.ask("lock")
+        self.wait_state(locked=True)
+        self.assertEqual(self.state()["occupied"], [1], "locking took a window away")
+        other, _ = self.window("--app-id", "second", "--title", "Second")
+        self.assertIsNone(process.poll(), "the first window was closed by the lock")
+        self.assertIsNone(other.poll(), "a window could not be opened while locked")
+        self.assertEqual(self.state()["occupied"], [1])
 
 
 if __name__ == "__main__":
