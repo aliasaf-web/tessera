@@ -28,6 +28,10 @@ import sys
 MAX_BLOCK = 2600
 # Enough for one class going wrong at a time, not enough to bury the check.
 MAX_BLOCKS = 6
+# A build's complaints are one line each, and a tool with something to say about
+# fifteen files should be able to say it: reading them one round at a time is how
+# the first cppcheck run went, and it was not a way to get anything done.
+MAX_BUILD_LINES = 14
 # The line that names the test is kept whole from the front; the reason, which
 # unittest puts at the end of the block, is what is worth reading.
 HEAD = 160
@@ -87,7 +91,7 @@ def build_reports(text):
             continue
         seen.add(line)
         kept.append(line)
-    return kept[:MAX_BLOCKS]
+    return kept[:MAX_BUILD_LINES]
 
 
 def annotations(text):

@@ -631,19 +631,28 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
         `compositor/tests/tile_test.c` works the geometry out for N windows on
         one screen; what nothing checked until now is that the answer reaches the
         windows - that the second is asked to be smaller, and the first is told
-        again rather than left the size it was.
+        again rather than left the size it was. This is a master/stack layout
+        (`tile_slot()`), so "smaller" is not "half": the wide column is the
+        master's and the rest share the other one.
         """
         first, _lines = self.window()
         only = self.settled(first)
         second, _lines = self.window("--app-id", "second", "--title", "Second")
         second_size = self.settled(second)
         first_size = self.settled(first)
-        self.assertLess(second_size[0] * second_size[1], only[0] * only[1],
-                        f"the second window was not told to share the screen: {second_size} "
-                        f"of {only}")
-        self.assertLess(first_size[0] * first_size[1], only[0] * only[1],
-                        f"the first window kept its size when the second arrived: {first_size}")
-        self.assertEqual(first_size, second_size, "the two windows were not given the same shape")
+        for name, size in (("first", first_size), ("second", second_size)):
+            self.assertLess(size[0] * size[1], only[0] * only[1],
+                            f"the {name} window was not told to share the screen: {size} of {only}")
+        # Which of the two is the master is the layout's business - on the run
+        # that found this out, the newest window took the wide column - so the
+        # test asks only that the columns differ: a master/stack layout with the
+        # default ratio of 0.55 has no reason to hand out two halves, and a
+        # window that got the *same* size as its sibling is the day that stopped
+        # being true.
+        self.assertNotEqual(first_size, second_size,
+                            f"both windows got {first_size}; the master column is wider")
+        self.assertLessEqual(first_size[0] + second_size[0], only[0],
+                             "the two columns together are wider than the screen had")
 
     def test_fullscreen_leaves_the_size_it_found(self):
         """Coming back out of fullscreen is a promise about the size, not about
