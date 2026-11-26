@@ -56,18 +56,40 @@ if [ "$SRC_OWNER" != "$ME" ] && [ "$SRC_OWNER" != "root" ]; then
 Take it back first, then run the installer again:
     sudo chown -R $ME $SRC"
 fi
-if [ -n "$(find "$SRC" -maxdepth 0 -perm /g+w,o+w -print 2>/dev/null)" ]; then
-	if [ "$MODE" = "update" ]; then
+MODE_BAD="$(find "$SRC" -maxdepth 0 -perm /g+w,o+w -print 2>/dev/null || true)"
+if [ -n "$MODE_BAD" ]; then
+	# Someone other than you can change what gets installed with root rights.
+	# Taking the write bit off is the whole remedy, and this folder is ours to
+	# take it off when you own it - so it is done rather than asked about: an
+	# update that stops here leaves a person with the version they already had
+	# and nothing saying why, which is worse than a quiet fix.
+	if [ "$SRC_OWNER" = "$ME" ]; then
+		chmod go-w "$SRC" 2>/dev/null || true
+	else
+		sudo chmod go-w "$SRC" 2>/dev/null || true
+	fi
+	if [ -n "$(find "$SRC" -maxdepth 0 -perm /g+w,o+w -print 2>/dev/null)" ]; then
 		fail "Other people can change the Tessera folder ($SRC), and Tessera
-installs from it with root rights. Make it yours alone first:
+installs from it with root rights, so they could decide what ends up on your
+machine. This could not be closed off from here. Make the folder yours alone
+and run this again:
     chmod go-w $SRC"
 	fi
-	warn "Other people can change the Tessera folder ($SRC), which is where"
-	warn "Tessera takes what it installs with root rights from. They should not"
-	warn "be able to decide that:  chmod go-w $SRC"
-	printf 'Continue anyway? [y/N] '
-	read -r answer </dev/tty || answer=""
-	case "$answer" in y|Y|yes) ;; *) exit 1 ;; esac
+	warn "  The Tessera folder was open to other people's changes; it is yours alone now."
+fi
+
+if [ "$MODE" = "update" ]; then
+	# The folder not having anything new in it is the one way an update can look
+	# like it worked and change nothing, so it is said out loud. Reinstalling the
+	# same version is still allowed: it is how a broken install gets repaired.
+	INSTALLED_VERSION="$(cat "$PREFIX/share/tessera/VERSION" 2>/dev/null || true)"
+	if [ "$INSTALLED_VERSION" = "$TESSERA_VERSION" ]; then
+		warn "This folder holds version $TESSERA_VERSION, which is what is already"
+		warn "installed, so nothing here will change. If you meant to get a newer"
+		warn "Tessera, this folder may not be on the branch that has it:"
+		warn "    cd $SRC && git status -sb && git log --oneline -1"
+		echo
+	fi
 fi
 
 # Automatic login: asked on a first install; an update keeps the choice.
