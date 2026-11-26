@@ -287,6 +287,10 @@ itself when nothing has been built, and `TESSERA=/path/to/tessera` points it
 at a different build. The sanitiser job runs the first two again with
 AddressSanitizer and UndefinedBehaviorSanitizer turned on.
 
+A red run does not need the Actions log to be understood: `tools/ci-annotate.py`
+copies each failed test's report onto the check itself, where the checks tab and
+`gh api .../check-runs/ID/annotations` both show it.
+
 The keyboard shortcuts are listed once, in `shell/tessera_shell/shortcuts.py`.
 After changing them, run `python3 tools/update-readme.py` to update the tables
 above. The version number is in the `VERSION` file.
