@@ -94,6 +94,7 @@ test('reading settings', executable('config_test', 'tests/config_test.c', 'src/c
 	args: [files('../tests/config-sample')])
 test('JSON text', executable('json_test', 'tests/json_test.c', 'src/json.c',
 	build_by_default: false))
+test('text buffers', executable('buf_test', 'tests/buf_test.c', build_by_default: false))
 test('tiling', executable('tile_test', 'tests/tile_test.c',
 	dependencies: wlroots.partial_dependency(compile_args: true, includes: true),
 	build_by_default: false))

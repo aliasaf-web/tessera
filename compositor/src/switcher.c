@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "buf.h"
 #include "server.h"
 
 /* Alt+Tab (and Super+Tab). The compositor keeps track of the choice and
@@ -23,25 +24,31 @@ static void switcher_send(struct ts_server *server) {
 	if (buf == NULL) {
 		return;
 	}
-	size_t o = snprintf(buf, size, "{\"event\":\"switcher\",\"visible\":true,\"selected\":%d,"
-		"\"windows\":[", server->switcher_sel);
+	size_t o = buf_append(buf, size, 0,
+		"{\"event\":\"switcher\",\"visible\":true,\"selected\":%d,\"windows\":[",
+		server->switcher_sel);
 	bool first = true;
-	for (int i = 0; i < server->switcher_count && o < size; i++) {
+	for (int i = 0; i < server->switcher_count; i++) {
 		struct ts_view *view = view_by_id(server, server->switcher_ids[i]);
 		char title[TITLE_LEN], app[APP_ID_LEN];
 		json_escape(title, sizeof(title), view ? view_title(view) : "");
 		json_escape(app, sizeof(app), view ? view_app_id(view) : "");
 		/* hidden: on a workspace no screen is showing. */
-		o += snprintf(buf + o, size - o,
+		char item[ITEM_LEN];
+		size_t n = buf_append(item, sizeof(item), 0,
 			"%s{\"id\":%u,\"title\":\"%s\",\"app_id\":\"%s\",\"workspace\":%d,\"hidden\":%s}",
 			first ? "" : ",", server->switcher_ids[i], title, app,
 			view ? view->workspace : 0, view && view_is_hidden(view) ? "true" : "false");
+		/* The "}" of the whole message has to stay outside this window's
+		 * room, or a long list would end in half an object. */
+		if (!buf_fits(size, o, n + 2)) {
+			break; /* fewer windows to choose from beats no list at all */
+		}
+		o = buf_append(buf, size, o, "%s", item);
 		first = false;
 	}
-	if (o < size) {
-		snprintf(buf + o, size - o, "]}");
-		ipc_broadcast(server, buf);
-	}
+	buf_append(buf, size, o, "]}");
+	ipc_broadcast(server, buf);
 	free(buf);
 }
 

@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Pango", "1.0")
 
-from tessera_shell import terminal, theme  # noqa: E402
+from tessera_shell import ipc, terminal, theme  # noqa: E402
 
 
 class ConfigFile(unittest.TestCase):
@@ -47,6 +47,21 @@ class ConfigFile(unittest.TestCase):
     def test_missing_file(self):
         self.assertEqual(theme.read_config_file("/nonexistent/tessera/config", {}), {})
 
+    def test_quoting_and_limits(self):
+        """The value goes in so that both readers give it back unchanged:
+        spaces and a matching pair of quotes are taken off when reading."""
+        self.assertEqual(theme.config_line("theme", "dark"), "theme=dark")
+        self.assertEqual(theme.config_line("wallpaper", 'sea "winter"'),
+                         'wallpaper=sea "winter"')
+        # A value that starts and ends with the same quote is wrapped, because
+        # a reader would otherwise take that pair off.
+        for tricky in ('"x"', "'y'", '"', "'", '""'):
+            self.assertEqual(theme.config_value(theme.config_line("k", tricky).split("=", 1)[1]),
+                             tricky)
+        self.assertEqual(theme.config_line("k", "a=b"), "k=a=b")
+        for bad in ("line\nbreak", "carriage\rreturn", "x" * 1000):
+            self.assertRaises(ValueError, theme.config_line, "k", bad)
+
     def test_write_keeps_the_rest(self):
         with tempfile.TemporaryDirectory() as home:
             with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": home}):
@@ -62,6 +77,56 @@ class ConfigFile(unittest.TestCase):
                 self.assertEqual(values["accent"], "green")
                 self.assertEqual(values["display.HDMI-A-1.position"], "mirror")
                 self.assertEqual(text.count("accent"), 1)
+                # Written aside and moved over: nothing left behind, and the
+                # mode is the one the file is expected to have.
+                self.assertEqual([q.name for q in path.parent.iterdir()], ["config"])
+                self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+
+    def test_quote_that_needs_wrapping_survives(self):
+        with tempfile.TemporaryDirectory() as home:
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": home}):
+                pathlib.Path(theme.config_path()).parent.mkdir(parents=True)
+                theme.write_config_value("wallpaper", '"/home/me/My \"sea\".png"')
+                values = theme.read_config_file(theme.config_path(), {})
+                self.assertEqual(values["wallpaper"], '"/home/me/My \"sea\".png"')
+
+
+class SocketPath(unittest.TestCase):
+    """Where the shell looks for the window manager's control socket, which
+    has to be where the window manager puts it (compositor/src/ipc.c)."""
+
+    def test_the_same_name_in_both_programs(self):
+        source = (ROOT / "compositor" / "src" / "ipc.c").read_text(encoding="utf-8")
+        body = source[source.index("static bool socket_path"):]
+        body = body[:body.index("\n}")]
+        self.assertIn('"%s/tessera-%s.sock"', body)
+        self.assertIn("/run/user/%lu", body)
+        self.assertIn("XDG_RUNTIME_DIR", body)
+
+    def test_folder_from_the_environment(self):
+        with tempfile.TemporaryDirectory() as home:
+            env = {"XDG_RUNTIME_DIR": home, "WAYLAND_DISPLAY": "wayland-1", "TESSERA_SOCK": ""}
+            with mock.patch.dict(os.environ, env, clear=False):
+                self.assertEqual(ipc.socket_path(), os.path.join(home, "tessera-wayland-1.sock"))
+
+    def test_default_display(self):
+        with tempfile.TemporaryDirectory() as home:
+            env = {"XDG_RUNTIME_DIR": home, "TESSERA_SOCK": ""}
+            env["WAYLAND_DISPLAY"] = ""
+            with mock.patch.dict(os.environ, env, clear=False):
+                os.environ.pop("WAYLAND_DISPLAY", None)
+                self.assertEqual(ipc.socket_path(), os.path.join(home, "tessera-wayland-0.sock"))
+
+    def test_a_folder_of_someone_else_is_not_used(self):
+        with tempfile.TemporaryDirectory() as home:
+            env = {"XDG_RUNTIME_DIR": os.path.join(home, "nope"), "TESSERA_SOCK": ""}
+            with mock.patch.dict(os.environ, env, clear=False):
+                self.assertIsNone(ipc.socket_path())
+                self.assertIsNone(ipc.runtime_dir())
+
+    def test_the_variable_wins_over_the_folder(self):
+        with mock.patch.dict(os.environ, {"TESSERA_SOCK": "/tmp/elsewhere.sock"}):
+            self.assertEqual(ipc.socket_path(), "/tmp/elsewhere.sock")
 
 
 class Accents(unittest.TestCase):

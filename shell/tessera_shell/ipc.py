@@ -7,14 +7,31 @@ import socket
 from gi.repository import Gio, GLib
 
 
+def runtime_dir():
+    """The user's private folder for sockets: what XDG_RUNTIME_DIR says, or
+    the folder logind makes for this account when the variable is not set (the
+    window manager looks for the same one). None if there is no such folder,
+    or it belongs to someone else: nowhere safe to look for a socket then.
+    Everything in the desktop reaches the window manager through it."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or ""
+    if not runtime.startswith("/"):
+        runtime = f"/run/user/{os.getuid()}"
+    try:
+        if not os.path.isdir(runtime) or os.stat(runtime).st_uid != os.getuid():
+            return None
+    except OSError:
+        return None
+    return runtime
+
+
 def socket_path():
     """The control socket, in the user's private runtime folder (None if
     there is no such folder: there is no safe place for it then)."""
     path = os.environ.get("TESSERA_SOCK")
     if path:
         return path
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if not runtime:
+    runtime = runtime_dir()
+    if runtime is None:
         return None
     display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
     return os.path.join(runtime, f"tessera-{display}.sock")

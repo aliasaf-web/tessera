@@ -1,16 +1,32 @@
 # Builds Tessera on Debian 13 with warnings treated as errors, runs the
 # tests, and checks the Python and shell scripts. Runs on every push and
-# pull request.
+# pull request. A red run writes its reason onto the check itself, so the
+# failure can be read without the Actions log (see tools/ci-annotate.py).
 name: Checks
 
 on:
   push:
   pull_request:
 
+# A push while the previous run of the same branch is still going makes the
+# older one pointless: it is cancelled so the newest result comes sooner.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     runs-on: ubuntu-latest
     container: debian:trixie
+    # A test that cannot finish should say so rather than hold a runner: the
+    # desktop tests wait on a socket, and each wait has its own limit, so
+    # anything still running after this is stuck for good.
+    timeout-minutes: 15
+    # bash with pipefail, because the steps below pipe their output into a
+    # file: without it, a failing program would look like a passing step.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Install what Tessera needs
         run: |
@@ -31,15 +47,93 @@ jobs:
           ninja -C build
 
       - name: Window manager tests
-        run: meson test -C build --print-errorlogs
+        run: |
+          meson test -C build --print-errorlogs 2>&1 \
+            | tee "${RUNNER_TEMP:-/tmp}/meson.log"
 
-      - name: Shell tests
-        run: python3 -m unittest discover -s tests -v
+      # Includes tests/test_compositor.py, which starts the window manager that
+      # was just built on wlroots' headless backend and drives it over its
+      # control socket; it skips itself if the build above did not happen.
+      - name: Shell tests, and the desktop over its socket
+        run: |
+          python3 -m unittest discover -s tests -v 2>&1 \
+            | tee "${RUNNER_TEMP:-/tmp}/tests.log"
 
       - name: Python style
-        run: flake8 shell tools tests
+        run: flake8 shell tools tests 2>&1 | tee "${RUNNER_TEMP:-/tmp}/style.log"
 
       - name: Shell scripts
         run: |
           shellcheck -s sh install.sh uninstall.sh data/tessera-autostart \
-            data/tessera-session data/tessera-settings data/tessera-shell data/tessera-update
+            data/tessera-session data/tessera-settings data/tessera-shell \
+            data/tessera-update 2>&1 | tee "${RUNNER_TEMP:-/tmp}/shell.log"
+
+      - name: Put the failure on the check run
+        if: failure()
+        run: python3 tools/ci-annotate.py "${RUNNER_TEMP:-/tmp}"/*.log
+
+  # The same helper tests again with the sanitizers on: the buffer work in
+  # ipc.c and switcher.c, the config file and the idle timer are where writing
+  # past the end of something was ever possible, and none of it is visible to
+  # a compiler. Debian splits the sanitizer runtimes into their own packages,
+  # so that install is a step of its own which may fail: without them there is
+  # nothing to check, and saying so out loud is worth more than a red tick.
+  sanitizers:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install what Tessera needs
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates \
+            build-essential meson ninja-build pkg-config libwlroots-0.18-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev libinput-dev \
+            libpixman-1-dev libcairo2-dev libpango1.0-dev libdrm-dev libsystemd-dev \
+            libpam0g-dev libxcb1-dev libxcb-icccm4-dev libxcb-ewmh-dev python3
+
+      - name: Install the sanitizer runtimes (a build can do without them)
+        continue-on-error: true
+        run: |
+          apt-get install -y --no-install-recommends libasan8 libubsan1
+
+      - uses: actions/checkout@v4
+
+      - name: Build and test with AddressSanitizer and UndefinedBehaviorSanitizer
+        run: |
+          if ! echo 'int main(void) { return 0; }' |
+              gcc -fsanitize=address,undefined -x c - -o "${RUNNER_TEMP:-/tmp}/sanitizer-check" 2>/dev/null; then
+            echo "::warning::this image has no sanitizer runtime, so nothing was checked with them"
+            exit 0
+          fi
+          # No -Dwerror=true here on purpose: this job is about memory, and a
+          # warning the sanitizers provoke should not hide what they found. The
+          # job above is the one that treats warnings as errors.
+          meson setup build-sanitizer compositor -Db_sanitize=address,undefined
+          ninja -C build-sanitizer
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+            meson test -C build-sanitizer --print-errorlogs 2>&1 \
+            | tee "${RUNNER_TEMP:-/tmp}/meson.log"
+
+      # The desktop itself, built with the sanitizers and driven over its
+      # socket by tests/test_compositor.py: the buffer work in ipc.c, the lock
+      # screen's helper process and the screen list are where writing past the
+      # end of something was ever possible. Leak checking is off here on
+      # purpose - a running desktop keeps allocations it means to keep until
+      # the session ends, and LeakSanitizer wants a privilege containers need
+      # not give.
+      - name: The headless desktop, with the sanitizers on
+        env:
+          TESSERA: ${{ github.workspace }}/build-sanitizer/tessera
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          python3 -m unittest tests.test_compositor -v 2>&1 \
+            | tee "${RUNNER_TEMP:-/tmp}/tests.log"
+
+      - name: Put the failure on the check run
+        if: failure()
+        run: python3 tools/ci-annotate.py "${RUNNER_TEMP:-/tmp}"/*.log

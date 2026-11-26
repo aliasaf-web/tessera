@@ -244,7 +244,11 @@ class SettingsWindow(Adw.ApplicationWindow):
         quick succession, such as dragging a slider, are applied once)."""
         if self.loading:
             return
-        write_config_value(key, value)
+        try:
+            write_config_value(key, value)
+        except ValueError as error:
+            self.toast(str(error))
+            return
         self.cfg[key] = value
         if self.reload_source:
             GLib.source_remove(self.reload_source)

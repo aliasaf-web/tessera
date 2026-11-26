@@ -120,6 +120,23 @@ static int clock_tick(void *data) {
 	return 0;
 }
 
+/* Locked: the session stops being drawn at all. Nothing changes on the
+ * screen, because the lock screen already covers all of it, but a program
+ * watching the screen - the screencopy protocol, or a screenshot taken by
+ * something you started before locking - now sees the lock screen instead of
+ * your windows and what is written in them. The desktop colour and the
+ * wallpaper stay: the lock screen shows those itself. */
+static void lock_session_visible(struct ts_server *server, bool visible) {
+	struct wlr_scene_tree *layers[] = {
+		server->layer_shell_bg, server->layer_shell_bottom, server->layer_tiled,
+		server->layer_floating, server->layer_shell_top, server->layer_fullscreen,
+		server->layer_popups, server->layer_shell_overlay, server->layer_drag,
+	};
+	for (size_t i = 0; i < sizeof(layers) / sizeof(layers[0]); i++) {
+		wlr_scene_node_set_enabled(&layers[i]->node, visible);
+	}
+}
+
 void lock_engage(struct ts_server *server) {
 	if (server->locked) {
 		return;
@@ -136,10 +153,12 @@ void lock_engage(struct ts_server *server) {
 	server->password_len = 0;
 	explicit_bzero(server->password, sizeof(server->password));
 	server->auth_failed = false;
+	server->auth_error = false;
 	wlr_seat_keyboard_notify_clear_focus(server->seat);
 	wlr_seat_pointer_clear_focus(server->seat);
 	input_constraint_update(server); /* lets go of a held pointer */
 	lock_arrange(server);
+	lock_session_visible(server, false); /* what is behind it is nobody's business */
 	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 	server->cursor_image = "default";
 	idle_update_inhibit(server); /* windows behind the lock screen can't be seen */
@@ -156,6 +175,9 @@ static void lock_release(struct ts_server *server) {
 	wl_event_source_timer_update(server->auth_wait_timer, 0);
 	server->password_len = 0;
 	explicit_bzero(server->password, sizeof(server->password));
+	/* The windows come back before the lock screen goes away, so the screen
+	 * is never empty for a moment. */
+	lock_session_visible(server, true);
 	struct ts_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
 		lock_output_destroyed(output);
@@ -240,13 +262,14 @@ int lock_auth_helper_main(void) {
 }
 
 /* After a few wrong passwords in a row, each new try has to wait a little
- * longer: 2, 4, 8, 16 and then 30 seconds. */
+ * longer: 2, 4, 8, 16, 32 and then 60 seconds. PAM adds a wait of its own
+ * (see data/pam-tessera), which also counts when the desktop is restarted. */
 static int wait_after_failures(int failures) {
-	if (failures < 3) {
+	if (failures < 2) {
 		return 0;
 	}
-	int doublings = failures - 2;
-	return doublings >= 5 ? 30 : 1 << doublings;
+	int doublings = failures - 1;
+	return doublings >= 6 ? 60 : 1 << doublings;
 }
 
 static int wait_tick(void *data) {
@@ -261,19 +284,55 @@ static int wait_tick(void *data) {
 	return 0;
 }
 
+/* The password check runs as a child process, so PAM can take its time. If
+ * it never answers - a module waiting for something of its own, a machine too
+ * busy to run the child at all - the screen must not stay shut for good. */
+#define AUTH_TIMEOUT_MS 30000
+
+/* Ends the watch, whatever state the child got to. A child that has not
+ * finished is left for the next attempt to pick up rather than waited for:
+ * one that hung the check may be stuck in the kernel, and the desktop must
+ * not stop along with it. */
+static void auth_stop(struct ts_server *server) {
+	if (server->auth_source) {
+		wl_event_source_remove(server->auth_source);
+		server->auth_source = NULL;
+	}
+	if (server->auth_fd >= 0) {
+		close(server->auth_fd);
+		server->auth_fd = -1;
+	}
+	if (server->auth_timeout) {
+		wl_event_source_timer_update(server->auth_timeout, 0);
+	}
+	if (server->auth_pid > 0 && waitpid(server->auth_pid, NULL, WNOHANG) > 0) {
+		server->auth_pid = 0;
+	}
+	server->auth_busy = false;
+}
+
+static int auth_timeout_fire(void *data) {
+	struct ts_server *server = data;
+	if (!server->auth_busy) {
+		return 0;
+	}
+	wlr_log(WLR_ERROR, "Checking the password never finished; leaving it");
+	if (server->auth_pid > 0) {
+		kill(server->auth_pid, SIGKILL); /* the closed pipe would do it as well */
+	}
+	auth_stop(server);
+	/* Not the user's fault, so no wrong password is counted and no wait is
+	 * added: the next Enter is tried straight away. */
+	server->auth_error = true;
+	lock_redraw(server, REDRAW_FIELD);
+	return 0;
+}
+
 static int auth_done(int fd, uint32_t mask, void *data) {
 	struct ts_server *server = data;
 	char result = 0;
 	ssize_t n = read(fd, &result, 1);
-	wl_event_source_remove(server->auth_source);
-	server->auth_source = NULL;
-	close(fd);
-	server->auth_fd = -1;
-	if (server->auth_pid > 0) {
-		waitpid(server->auth_pid, NULL, 0);
-		server->auth_pid = 0;
-	}
-	server->auth_busy = false;
+	auth_stop(server);
 	if (n == 1 && result == '1') {
 		lock_release(server);
 	} else {
@@ -289,6 +348,9 @@ static int auth_done(int fd, uint32_t mask, void *data) {
 }
 
 static void start_auth(struct ts_server *server) {
+	if (server->auth_pid > 0 && waitpid(server->auth_pid, NULL, WNOHANG) > 0) {
+		server->auth_pid = 0; /* the last one that was left over */
+	}
 	int in[2], out[2];
 	if (pipe2(in, O_CLOEXEC) < 0) {
 		return;
@@ -333,8 +395,10 @@ static void start_auth(struct ts_server *server) {
 	server->auth_fd = out[0];
 	server->auth_busy = true;
 	server->auth_failed = false;
+	server->auth_error = false;
 	server->auth_source = wl_event_loop_add_fd(server->loop, out[0],
 		WL_EVENT_READABLE | WL_EVENT_HANGUP, auth_done, server);
+	wl_event_source_timer_update(server->auth_timeout, AUTH_TIMEOUT_MS);
 	lock_redraw(server, REDRAW_FIELD);
 }
 
@@ -524,6 +588,7 @@ bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepo
 		if (codepoint >= 0x20 && codepoint != 0x7F) {
 			append_utf8(server, codepoint);
 			server->auth_failed = false;
+			server->auth_error = false;
 		} else {
 			return true;
 		}
@@ -534,6 +599,7 @@ bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepo
 
 void lock_init(struct ts_server *server) {
 	server->auth_wait_timer = wl_event_loop_add_timer(server->loop, wait_tick, server);
+	server->auth_timeout = wl_event_loop_add_timer(server->loop, auth_timeout_fire, server);
 	server->lock_arm_timer = wl_event_loop_add_timer(server->loop, arm_expired, server);
 	server->clock_timer = wl_event_loop_add_timer(server->loop, clock_tick, server);
 	wl_event_source_timer_update(server->clock_timer, 15000);

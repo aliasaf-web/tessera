@@ -1,4 +1,11 @@
 #%PAM-1.0
 # Used by the Tessera lock screen to check your password.
+
+# Wait three seconds after a wrong password, so that guessing is slowed even
+# if the desktop was restarted in between (the lock screen counts the tries
+# and waits longer each time too). It has to come before the check: a failing
+# check stops the rest of the list, and this only says how long to wait.
+auth optional pam_faildelay.so delay=3000000
+
 @include common-auth
 @include common-account

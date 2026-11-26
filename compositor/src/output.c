@@ -480,9 +480,23 @@ static bool apply_from_tool(struct ts_server *server, struct wlr_output_configur
 		wlr_output_state_finish(&state);
 		if (head->state.enabled) {
 			output->off = output->mirror = false;
-			output_join_layout(output);
-			wlr_output_layout_add(server->output_layout, head->state.output,
-				head->state.x, head->state.y);
+			bool was_in_use = output->in_layout;
+			output_join_layout(output); /* a new screen goes where it fits */
+			/* A tool that only changes a screen's mode or size has no position
+			 * to give, and the protocol then says 0,0 - moving every screen in
+			 * the request to that corner would pile the screens on top of each
+			 * other. So an all-zero position is only followed when it is where
+			 * the screen already is; a position meant on purpose goes in the
+			 * settings file (display.X.position=0,0), which is read in full. */
+			struct wlr_box box = {0};
+			if (was_in_use) {
+				wlr_output_layout_get_box(server->output_layout, head->state.output, &box);
+			}
+			if (was_in_use && (box.x != head->state.x || box.y != head->state.y) &&
+					(head->state.x != 0 || head->state.y != 0)) {
+				wlr_output_layout_add(server->output_layout, head->state.output,
+					head->state.x, head->state.y);
+			}
 		}
 	}
 	arrange_all(server);

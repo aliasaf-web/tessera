@@ -97,6 +97,14 @@ static bool is_privileged(struct ts_server *server, const struct wl_global *glob
 static bool filter_global(const struct wl_client *client, const struct wl_global *global,
 		void *data) {
 	struct ts_server *server = data;
+	/* While the screen is locked, nothing new may start watching it or read
+	 * what is on the clipboard: the bind waits until the screen opens again.
+	 * A program that bound before the lock keeps what it already had. */
+	if (server->locked && (global == server->screencopy->global ||
+			global == server->export_dmabuf->global ||
+			global == server->data_control->global)) {
+		return false;
+	}
 	/* Apps started in a sandbox connect through a security context. */
 	bool sandboxed = wlr_security_context_manager_v1_lookup_client(
 		server->security_context, client) != NULL;
@@ -286,6 +294,11 @@ int main(int argc, char *argv[]) {
 
 	wl_event_source_remove(sigterm);
 	wl_event_source_remove(sigint);
+	/* Leave the screens as we found them: the login screen that follows is
+	 * not ours to redraw, and it should not come up blanked or tinted. */
+	output_set_dpms(&server, true);
+	server.night_override = -1;
+	night_light_update(&server, true);
 	ipc_finish(&server);
 	wl_display_destroy_clients(server.display);
 #if TESSERA_XWAYLAND

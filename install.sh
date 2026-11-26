@@ -47,6 +47,29 @@ if [ "$CODENAME" != "trixie" ]; then
 	case "$answer" in y|Y|yes) ;; *) exit 1 ;; esac
 fi
 
+# Everything put in place with root rights is read out of this folder, so no
+# one but you must be able to change what is in it: otherwise any program
+# running as another user could decide what ends up installed on the machine.
+SRC_OWNER="$(stat -c %U "$SRC")"
+if [ "$SRC_OWNER" != "$ME" ] && [ "$SRC_OWNER" != "root" ]; then
+	fail "The Tessera folder ($SRC) belongs to $SRC_OWNER, not to $ME.
+Take it back first, then run the installer again:
+    sudo chown -R $ME $SRC"
+fi
+if [ -n "$(find "$SRC" -maxdepth 0 -perm /g+w,o+w -print 2>/dev/null)" ]; then
+	if [ "$MODE" = "update" ]; then
+		fail "Other people can change the Tessera folder ($SRC), and Tessera
+installs from it with root rights. Make it yours alone first:
+    chmod go-w $SRC"
+	fi
+	warn "Other people can change the Tessera folder ($SRC), which is where"
+	warn "Tessera takes what it installs with root rights from. They should not"
+	warn "be able to decide that:  chmod go-w $SRC"
+	printf 'Continue anyway? [y/N] '
+	read -r answer </dev/tty || answer=""
+	case "$answer" in y|Y|yes) ;; *) exit 1 ;; esac
+fi
+
 # Automatic login: asked on a first install; an update keeps the choice.
 GREETD_CONFIG=/etc/tessera/greetd.toml
 OLD_GETTY=/etc/systemd/system/getty@tty1.service.d/tessera-autologin.conf
@@ -174,7 +197,11 @@ if [ "$MODE" = "update" ] && [ -f "$BUILDDIR/build.ninja" ]; then
 else
 	fresh_build
 fi
-sudo ninja -C "$BUILDDIR" install
+# The build runs as you, and only the finished program is put where it goes
+# with root rights. Running "sudo ninja install" instead would let a compiler
+# (and anything it runs) act as root inside a folder you can write to, which
+# is an easier way in than installing anything.
+sudo install -Dm 755 "$BUILDDIR/tessera" "$PREFIX/bin/tessera"
 
 say "Installing the Tessera shell and settings"
 sudo install -d "$PREFIX/share/tessera/shell"
@@ -182,9 +209,14 @@ sudo rm -rf "$PREFIX/share/tessera/shell/tessera_shell"
 sudo cp -r "$SRC/shell/tessera_shell" "$PREFIX/share/tessera/shell/"
 sudo install -m 644 "$SRC/VERSION" "$PREFIX/share/tessera/VERSION"
 sudo find "$PREFIX/share/tessera/shell" -name '__pycache__' -prune -exec rm -rf {} +
-for script in tessera-session tessera-autostart tessera-shell tessera-settings tessera-update; do
+for script in tessera-session tessera-autostart tessera-shell tessera-settings; do
 	sudo install -m 755 "$SRC/data/$script" "$PREFIX/bin/$script"
 done
+# tessera-update needs to know where this version was installed.
+UPDATE_TMP="$(mktemp)"
+sed "s|@PREFIX@|$PREFIX|g" "$SRC/data/tessera-update" >"$UPDATE_TMP"
+sudo install -m 755 "$UPDATE_TMP" "$PREFIX/bin/tessera-update"
+rm -f "$UPDATE_TMP"
 # Lets tessera-update find this folder.
 printf '%s\n' "$SRC" | sudo tee "$PREFIX/share/tessera/source" >/dev/null
 sudo install -Dm 644 "$SRC/data/org.tessera.Settings.desktop" \

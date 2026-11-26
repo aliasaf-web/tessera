@@ -58,6 +58,15 @@ class Shell:
         self.sync_bars()
 
         self.events = ipc.EventStream(self.on_event)
+        if ipc.socket_path() is None:
+            # Without the control socket nothing works: the bar has no
+            # workspaces to show and the keys reach nothing. Say so, rather
+            # than leave an empty strip along the bottom of the screen.
+            self.notifications.notify_internal(
+                "The desktop cannot be reached",
+                "There is no runtime folder for the window manager's control "
+                "socket. Logging in the usual way (from the login screen) sets "
+                "one up; so does XDG_RUNTIME_DIR.")
         self._low_battery_warned = False
         self.battery.connect(self._check_battery)
 

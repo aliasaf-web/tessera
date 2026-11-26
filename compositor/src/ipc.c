@@ -9,18 +9,29 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <wlr/util/log.h>
+#include "buf.h"
 #include "server.h"
 
 /* A tiny line-based protocol on $XDG_RUNTIME_DIR/tessera-$WAYLAND_DISPLAY.sock
  * Requests are plain words ("workspace 2", "lock"); replies and events are
  * one JSON object per line. */
 
-/* The socket lives in the user's private runtime folder; without one there
- * is no safe place for it, so it is not used at all. */
+/* The socket lives in the user's private runtime folder. XDG_RUNTIME_DIR is
+ * set by logind for a normal session; when it is missing (a session started
+ * by hand, or one logind did not take up) the folder logind would have made
+ * is used instead, so the desktop still hangs together. With neither, there
+ * is no safe place for the socket, so it is not used at all.
+ * The shell works the path out the same way (shell/tessera_shell/ipc.py). */
 static bool socket_path(char *buf, size_t size, const char *display) {
 	const char *runtime = getenv("XDG_RUNTIME_DIR");
+	char fallback[64];
 	if (runtime == NULL || runtime[0] != '/') {
-		return false;
+		snprintf(fallback, sizeof(fallback), "/run/user/%lu", (unsigned long)getuid());
+		struct stat st;
+		if (stat(fallback, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) {
+			return false;
+		}
+		runtime = fallback;
 	}
 	int n = snprintf(buf, size, "%s/tessera-%s.sock", runtime,
 		display ? display : "wayland-0");
@@ -106,14 +117,14 @@ void ipc_broadcast(struct ts_server *server, const char *json_line) {
 	}
 }
 
-/* Room for a state line: the title and app id, and every screen's workspaces. */
-#define STATE_MAX 4096
-
 /* One screen's workspaces with windows, and those with a window that needs
- * attention, as JSON number lists ("1,3"). */
+ * attention, as JSON number lists ("1,3"). Four bytes per workspace is the
+ * most a number and its comma can be, so these always fit whole. */
+#define WS_LIST_LEN (TS_WORKSPACES * 4 + 1)
+
 struct workspace_lists {
-	char occupied[32];
-	char urgent[32];
+	char occupied[WS_LIST_LEN];
+	char urgent[WS_LIST_LEN];
 };
 
 static void workspace_lists(struct ts_server *server, struct ts_output *output,
@@ -134,38 +145,45 @@ static void workspace_lists(struct ts_server *server, struct ts_output *output,
 	lists->occupied[0] = lists->urgent[0] = '\0';
 	for (int i = 1; i <= TS_WORKSPACES; i++) {
 		if (occupied[i]) {
-			o += snprintf(lists->occupied + o, sizeof(lists->occupied) - o, "%s%d",
+			o = buf_append(lists->occupied, sizeof(lists->occupied), o, "%s%d",
 				o ? "," : "", i);
 		}
 		if (urgent[i]) {
-			u += snprintf(lists->urgent + u, sizeof(lists->urgent) - u, "%s%d", u ? "," : "", i);
+			u = buf_append(lists->urgent, sizeof(lists->urgent), u, "%s%d",
+				u ? "," : "", i);
 		}
 	}
 }
 
 /* The state of the screen in use, plus each screen's own workspaces (for the
- * bar on that screen). */
-static void state_json(struct ts_server *server, char *buf, size_t size) {
+ * bar on that screen). Built as long as it needs to be, like outputs_json:
+ * a long window title or a fourth screen can then never cut the line in
+ * half, which would leave the bar with text it cannot read. The caller frees
+ * the result (NULL if there is no memory for it). */
+static char *state_text(struct ts_server *server) {
 	struct ts_output *focused = output_focused(server);
 	struct workspace_lists lists;
 	workspace_lists(server, focused, &lists);
 
-	char screens[STATE_MAX / 2] = "";
-	size_t used = 0;
+	char *text = NULL;
+	size_t size = 0;
+	FILE *f = open_memstream(&text, &size);
+	if (f == NULL) {
+		return NULL;
+	}
+	fprintf(f, "{\"event\":\"state\",\"workspace\":%d,\"workspaces\":%d,\"occupied\":[%s],"
+		"\"urgent\":[%s],\"outputs\":[",
+		focused ? focused->workspace : 1, TS_WORKSPACES, lists.occupied, lists.urgent);
+	bool first = true;
 	struct ts_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
 		struct workspace_lists own;
 		workspace_lists(server, output, &own);
 		char name[64];
 		json_escape(name, sizeof(name), output->wlr_output->name);
-		int n = snprintf(screens + used, sizeof(screens) - used,
-			"%s{\"name\":\"%s\",\"workspace\":%d,\"occupied\":[%s],\"urgent\":[%s]}",
-			used ? "," : "", name, output->workspace, own.occupied, own.urgent);
-		if (n < 0 || (size_t)n >= sizeof(screens) - used) {
-			screens[used] = '\0'; /* leaves out a screen that doesn't fit */
-			break;
-		}
-		used += (size_t)n;
+		fprintf(f, "%s{\"name\":\"%s\",\"workspace\":%d,\"occupied\":[%s],\"urgent\":[%s]}",
+			first ? "" : ",", name, output->workspace, own.occupied, own.urgent);
+		first = false;
 	}
 
 	char title[512] = "", app[256] = "";
@@ -173,14 +191,13 @@ static void state_json(struct ts_server *server, char *buf, size_t size) {
 		json_escape(title, sizeof(title), view_title(server->focused_view));
 		json_escape(app, sizeof(app), view_app_id(server->focused_view));
 	}
-	snprintf(buf, size,
-		"{\"event\":\"state\",\"workspace\":%d,\"workspaces\":%d,\"occupied\":[%s],"
-		"\"urgent\":[%s],\"outputs\":[%s],\"title\":\"%s\",\"app_id\":\"%s\",\"locked\":%s,"
+	fprintf(f, "],\"title\":\"%s\",\"app_id\":\"%s\",\"locked\":%s,"
 		"\"theme\":\"%s\",\"night_light\":%s,\"compact\":%s}",
-		focused ? focused->workspace : 1, TS_WORKSPACES, lists.occupied, lists.urgent,
-		screens, title, app, server->locked ? "true" : "false",
+		title, app, server->locked ? "true" : "false",
 		server->theme.dark ? "dark" : "light", server->night_active ? "true" : "false",
 		focused && output_is_compact(focused) ? "true" : "false");
+	fclose(f);
+	return text;
 }
 
 /* FNV-1a: tells whether a client already has this exact state. */
@@ -200,16 +217,19 @@ void ipc_send_state(struct ts_server *server) {
 	if (wl_list_empty(&server->ipc_clients)) {
 		return;
 	}
-	char buf[STATE_MAX];
-	state_json(server, buf, sizeof(buf));
-	uint64_t hash = text_hash(buf);
+	char *text = state_text(server);
+	if (text == NULL) {
+		return;
+	}
+	uint64_t hash = text_hash(text);
 	struct ts_ipc_client *client, *tmp;
 	wl_list_for_each_safe(client, tmp, &server->ipc_clients, link) {
 		if (client->subscribed && client->state_hash != hash) {
 			client->state_hash = hash;
-			client_write(client, buf);
+			client_write(client, text);
 		}
 	}
+	free(text);
 }
 
 void config_reload(struct ts_server *server) {
@@ -249,12 +269,23 @@ static void handle_command(struct ts_ipc_client *client, char *line) {
 	const char *ok = "{\"ok\":true}";
 	struct ts_view *focused = server->focused_view;
 
+	/* While the screen is locked this socket can be reached by any program
+	 * of yours that is still running, so it may only be watched, not used to
+	 * start something, move windows around, or end the session. */
+	if (server->locked && strcmp(line, "subscribe") != 0 && strcmp(line, "state") != 0 &&
+			strcmp(line, "outputs") != 0 && strcmp(line, "version") != 0) {
+		client_write(client, "{\"ok\":false,\"error\":\"the screen is locked\"}");
+		return;
+	}
+
 	if (strcmp(line, "subscribe") == 0) {
 		client->subscribed = true;
-		char buf[STATE_MAX];
-		state_json(server, buf, sizeof(buf));
-		client->state_hash = text_hash(buf);
-		client_write(client, buf);
+		char *text = state_text(server);
+		if (text != NULL) {
+			client->state_hash = text_hash(text);
+			client_write(client, text);
+			free(text);
+		}
 		return;
 	} else if (strcmp(line, "outputs") == 0) {
 		char *json = outputs_json(server);
@@ -262,9 +293,11 @@ static void handle_command(struct ts_ipc_client *client, char *line) {
 		free(json);
 		return;
 	} else if (strcmp(line, "state") == 0) {
-		char buf[STATE_MAX];
-		state_json(server, buf, sizeof(buf));
-		client_write(client, buf);
+		char *text = state_text(server);
+		if (text != NULL) {
+			client_write(client, text);
+			free(text);
+		}
 		return;
 	} else if (strcmp(line, "workspace") == 0 && arg) {
 		/* A second word names the screen (the bar on that screen sends it);
@@ -463,8 +496,8 @@ int ipc_client_main(int argc, char **argv) {
 	if (argc < 1) {
 		fprintf(stderr, "Usage: tessera msg COMMAND [ARGUMENT]\n"
 			"Commands: workspace N|next|prev [SCREEN], move-to-workspace N, focus ID, exec CMD,\n"
-			"          close, fullscreen, float, lock, reload, logout, state, outputs, subscribe,\n"
-			"          dpms on|off, night-light on|off|toggle, help\n");
+			"          close, fullscreen, float, lock, reload, logout, exit, state, outputs,\n"
+			"          subscribe, version, dpms on|off, night-light on|off|toggle, help\n");
 		return 1;
 	}
 	/* The request is one line: the words separated by spaces. */
