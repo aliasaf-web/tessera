@@ -10,6 +10,10 @@ feature nobody can find.
 These tests read both sides as text (and the Python as a syntax tree) and
 check the lists still agree. They start nothing and need no libraries, so they
 run on a bare checkout, before the window manager is built.
+
+Two more agreements are checked here, because they were broken in the same easy
+way: a fact the installer writes down that nobody reads, and one limit written
+twice in two files.
 """
 
 import ast
@@ -183,6 +187,96 @@ class Commands(unittest.TestCase):
         self.assertGreaterEqual(len(sent), 5, "the bar no longer sends any commands by name")
         unknown = sorted(sent - self.accepted)
         self.assertEqual(unknown, [], f"the bar sends {unknown}, which the desktop does not know")
+
+
+class Provenance(unittest.TestCase):
+    """The note the installer leaves about the build it installed.
+
+    `install.sh` writes `share/tessera/provenance`, the shell reads it from the
+    same folder, and Settings prints it. The names are the whole protocol, so
+    they are checked against each other: a key written but never read is a fact
+    nobody sees, and a key read but never written is a row that quietly vanishes.
+    """
+
+    def setUp(self):
+        self.install = source(ROOT / "install.sh")
+        self.package = source(SHELL_DIR / "__init__.py")
+        self.settings = source(SHELL_DIR / "settings.py")
+
+    def provenance_block(self):
+        """The few lines of install.sh that write the file."""
+        start = self.install.index('PROVENANCE="$(mktemp)"')
+        return self.install[start:self.install.index('rm -f "$PROVENANCE"', start)]
+
+    def test_both_sides_look_in_the_same_folder(self):
+        """The installer's `$PREFIX/share/tessera` and the shell's walk up from
+        its own file have to land on the same directory."""
+        self.assertIn('"$PREFIX/share/tessera/provenance"', self.install,
+                      "install.sh no longer installs the provenance file beside VERSION")
+        self.assertIn('install -m 644 "$SRC/VERSION" "$PREFIX/share/tessera/VERSION"',
+                      self.install, "VERSION and provenance are no longer installed side by side")
+        # parents[2] from shell/tessera_shell/__init__.py is share/tessera when
+        # installed and the top of the source folder in a checkout, which is
+        # what lets one line of code serve both.
+        self.assertIn("parents[2]", self.package,
+                      "the shell no longer looks beside itself for the installed files")
+        self.assertIn('_shared() / "provenance"', self.package)
+        self.assertIn('_shared() / "VERSION"', self.package)
+
+    def test_every_written_key_is_read_and_understood(self):
+        # Only the name matters here - the value is either "%s" or the fixed
+        # word "yes" - and the whole line is a printf, so nothing else counts.
+        written = set(re.findall(r"printf '(\w+)=", self.provenance_block()))
+        read = set(re.findall(r'note\.get\("(\w+)"\)', self.settings))
+        self.assertEqual(written, {"version", "built", "commit", "branch", "changed"},
+                         f"the installer records {sorted(written)} now")
+        self.assertEqual(written - {"version"}, read,
+                         "written but never shown, or shown but never written: "
+                         f"{sorted((written ^ read) - {'version'})}")
+
+    def test_the_note_carries_the_version_being_installed(self):
+        """About shows one version, so it cannot disagree with the desktop."""
+        lines = self.provenance_block().splitlines()
+        version = [line for line in lines if "version=" in line]
+        self.assertEqual(len(version), 1, "the note stopped recording the version once")
+        self.assertIn(r"printf 'version=%s\n'", version[0])
+        self.assertIn("$TESSERA_VERSION", version[0])
+
+
+class LockScreenLimits(unittest.TestCase):
+    """The longest password the lock screen can send, said once."""
+
+    def setUp(self):
+        self.server_h = source(ROOT / "compositor" / "src" / "server.h")
+        self.lock_c = source(ROOT / "compositor" / "src" / "lock.c")
+
+    def test_the_password_field_and_pam_agree(self):
+        cap = re.search(r"#define TS_PASSWORD_MAX (\d+)", self.server_h)
+        self.assertIsNotNone(cap, "the lock screen stopped saying how long a password can be")
+        # X/Open and Linux-PAM both take a response of 512 bytes counting the
+        # terminating NUL, so more than that cannot be checked by anyone.
+        self.assertLessEqual(int(cap.group(1)), 512, "PAM will not take a longer answer")
+        self.assertIn("char password[TS_PASSWORD_MAX];", self.server_h,
+                      "the field stopped using the limit it documents")
+        self.assertIn("char password[TS_PASSWORD_MAX];", self.lock_c,
+                      "the helper that asks PAM has its own idea of the size, which is how a "
+                      "long password ends up silently shortened")
+
+    def test_an_over_long_password_is_said_out_loud(self):
+        """A field that stops listening mid-word fails with no explanation at
+        all, so the notice is the fix rather than the cap."""
+        appended = body_of(self.lock_c, "static void append_utf8(")
+        self.assertIn("server->password_long = true;", appended,
+                      "running out of room is quiet again")
+        self.assertIn("if (server->password_len > 0 && !server->password_long)", self.lock_c,
+                      "a shortened password is being sent off to be checked")
+        self.assertIn("password_long", source(ROOT / "compositor" / "src" / "deco.c"),
+                      "the screen never mentions it")
+
+    def test_the_notice_can_be_gotten_out_of(self):
+        """Clearing the field, and both ends of a lock cycle, put it right."""
+        self.assertGreaterEqual(self.lock_c.count("password_long = false;"), 4,
+                                "nobody could get rid of the notice once it appeared")
 
 
 if __name__ == "__main__":

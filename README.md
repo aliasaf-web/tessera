@@ -177,11 +177,14 @@ The power button puts the laptop to sleep from there. If Caps Lock is on, the
 lock screen tells you.
 
 While the screen is locked the desktop behind it isn't drawn at all, so a
-program watching the screen sees only the lock screen, and the control socket
-(`tessera msg`) can be read but not used to start or move anything. It is a
-lock for a coffee break, not a vault: programs you started before locking keep
-running, and your files are as readable to your own account as they always
-were.
+program watching the screen sees only the lock screen; nothing that starts while
+you're away can ask to watch the screen, read the clipboard or change the
+monitors, until the screen opens again; the control socket (`tessera msg`) can be
+read but not used to start or move anything; and no program can move, resize or
+switch off a monitor from behind the lock. It is a lock for a coffee break, not a
+vault: a program you started *before* locking keeps whatever it had already
+picked up, and your files are as readable to your own account as they always
+were. Close an app you don't trust rather than locking over it.
 
 Screenshots are saved in **Pictures › Screenshots** and copied, so you can paste them straight away.
 
@@ -199,7 +202,7 @@ Click the clock, then the **gear** button at the top of quick settings. (Or tap
 | Sound | Which speakers and microphone to use |
 | Power & lock | When the screen locks and turns off |
 | Default apps | Web browser, files app and terminal |
-| About | Your computer's details and **Update Tessera** |
+| About | Your computer's details, which build is installed, and **Update Tessera** |
 
 Your choices are saved in `~/.config/tessera/config`. You can also edit that file
 by hand (any line from `/etc/tessera/config` can go in it, and the format is
@@ -223,6 +226,12 @@ tessera-update
 Type your password when asked. It downloads the newest version, installs it and
 then offers to restart. Your settings are kept, and apps you removed (or things
 you turned off, such as Bluetooth) stay that way.
+
+When it finishes it names the commit it installed, and **Settings › About**
+shows the same under **This build**: the commit, the branch it came from, the
+day it went in, and whether the folder held changes of your own. That's how to
+tell whether an update actually brought something new, instead of taking
+"Already up to date." on trust.
 
 > **Updating from the first version (1.0):** it doesn't have `tessera-update`
 > yet, so the first time type this instead:

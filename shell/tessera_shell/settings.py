@@ -20,7 +20,7 @@ gi.require_version("GdkPixbuf", "2.0")
 
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
-from . import __version__, ipc  # noqa: E402
+from . import __version__, ipc, read_provenance  # noqa: E402
 from .terminal import terminal_command  # noqa: E402
 from .theme import ACCENTS, read_config, write_config_value  # noqa: E402
 
@@ -124,6 +124,28 @@ def memory_text():
     except (OSError, ValueError):
         pass
     return "Unknown"
+
+
+def build_text():
+    """Which build is installed, in the words a person can use when asking
+    what went wrong: the commit, the branch it came from, the day it went in,
+    and whether the folder also held changes of its own. Empty when nothing is
+    installed to report on, and the row is left out rather than shown as
+    unknown."""
+    note = read_provenance()
+    if not note:
+        return ""
+    parts = []
+    if note.get("commit"):
+        came_from = "commit " + note["commit"]
+        if note.get("branch"):
+            came_from += f" on {note['branch']}"
+        if note.get("changed"):
+            came_from += ", with changes of your own"
+        parts.append(came_from)
+    if note.get("built"):
+        parts.append(f"installed {note['built']}")
+    return ", ".join(parts)
 
 
 def disk_text():
@@ -790,9 +812,13 @@ class SettingsWindow(Adw.ApplicationWindow):
 
     def page_about(self):
         group = Adw.PreferencesGroup(title="This computer")
-        for title, value in (("Tessera", __version__), ("System", os_name()),
-                             ("Processor", cpu_name()), ("Memory", memory_text()),
-                             ("Storage", disk_text())):
+        about = (("Tessera", __version__), ("System", os_name()),
+                 ("Processor", cpu_name()), ("Memory", memory_text()),
+                 ("Storage", disk_text()))
+        build = build_text()
+        if build:
+            about += (("This build", build),)
+        for title, value in about:
             row = Adw.ActionRow(title=title, subtitle=value)
             row.set_subtitle_selectable(True)
             group.add(row)

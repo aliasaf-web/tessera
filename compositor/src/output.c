@@ -507,9 +507,26 @@ static bool apply_from_tool(struct ts_server *server, struct wlr_output_configur
 	return ok;
 }
 
+/* A program's request to move, resize or switch off a screen. While the screen
+ * is locked these are refused: nothing you started hours ago should get to
+ * change what the lock screen is drawn on, and a layout that moves under a
+ * locked screen hides it from you rather than protecting you. */
+static bool can_change_outputs(struct ts_server *server) {
+	if (server->locked) {
+		wlr_log(WLR_DEBUG, "Refused to change the screens while the screen is locked");
+		return false;
+	}
+	return true;
+}
+
 static void output_manager_apply(struct wl_listener *listener, void *data) {
 	struct ts_server *server = wl_container_of(listener, server, output_manager_apply);
 	struct wlr_output_configuration_v1 *config = data;
+	if (!can_change_outputs(server)) {
+		wlr_output_configuration_v1_send_failed(config);
+		wlr_output_configuration_v1_destroy(config);
+		return;
+	}
 	if (apply_from_tool(server, config, false)) {
 		wlr_output_configuration_v1_send_succeeded(config);
 	} else {
@@ -521,6 +538,11 @@ static void output_manager_apply(struct wl_listener *listener, void *data) {
 static void output_manager_test(struct wl_listener *listener, void *data) {
 	struct ts_server *server = wl_container_of(listener, server, output_manager_test);
 	struct wlr_output_configuration_v1 *config = data;
+	if (!can_change_outputs(server)) {
+		wlr_output_configuration_v1_send_failed(config);
+		wlr_output_configuration_v1_destroy(config);
+		return;
+	}
 	if (apply_from_tool(server, config, true)) {
 		wlr_output_configuration_v1_send_succeeded(config);
 	} else {

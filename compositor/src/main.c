@@ -97,12 +97,20 @@ static bool is_privileged(struct ts_server *server, const struct wl_global *glob
 static bool filter_global(const struct wl_client *client, const struct wl_global *global,
 		void *data) {
 	struct ts_server *server = data;
-	/* While the screen is locked, nothing new may start watching it or read
-	 * what is on the clipboard: the bind waits until the screen opens again.
-	 * A program that bound before the lock keeps what it already had. */
+	/* While the screen is locked, nothing that starts now may watch the screen,
+	 * read the clipboard or rearrange the monitors: the bind waits until the
+	 * screen opens again. A program that was already running keeps what it took
+	 * before the lock - taking a capability away from something already connected
+	 * is not something a compositor can do without killing it, so the README says
+	 * what the lock screen does and does not defend against instead of promising
+	 * more than it can give.
+	 * Virtual keyboards and pointers are deliberately not held back: someone with
+	 * an on-screen keyboard or a switch device has to be able to reach the
+	 * password field, and one of those cannot invent a password you did not type. */
 	if (server->locked && (global == server->screencopy->global ||
 			global == server->export_dmabuf->global ||
-			global == server->data_control->global)) {
+			global == server->data_control->global ||
+			global == server->output_manager->global)) {
 		return false;
 	}
 	/* Apps started in a sandbox connect through a security context. */

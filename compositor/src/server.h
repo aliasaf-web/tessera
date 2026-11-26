@@ -1,6 +1,13 @@
 #ifndef TESSERA_SERVER_H
 #define TESSERA_SERVER_H
 
+/* The longest password this screen can hand to PAM. PAM takes a response of
+ * PAM_MAX_RESP_SIZE bytes counting the terminating zero (512, which is why the
+ * number below is 511 usable), so a longer one cannot be checked at all -
+ * which the lock screen says out loud rather than testing a shortened version
+ * of it and reporting "wrong password". */
+#define TS_PASSWORD_MAX 512
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <wayland-server-core.h>
@@ -434,8 +441,9 @@ struct ts_server {
 
 	/* Lock screen */
 	bool locked;
-	char password[256];
+	char password[TS_PASSWORD_MAX];
 	size_t password_len;
+	bool password_long;      /* more was typed than the field can hold */
 	bool auth_busy;
 	bool auth_failed;
 	bool auth_error;         /* the check itself went wrong, not the password */

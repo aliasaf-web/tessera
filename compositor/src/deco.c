@@ -443,6 +443,7 @@ static void draw_lock_field(cairo_t *cr, struct ts_server *server, double cx, do
 	const char *hint = "Type your password, then press Enter";
 	struct ts_color hint_color = t->text_dim;
 	char wait[96];
+	char too_long[96];
 	if (server->lock_armed == TS_LOCK_BUTTON_RESTART) {
 		hint = "Click Restart again to restart. Open apps will close.";
 		hint_color = t->accent;
@@ -461,6 +462,11 @@ static void draw_lock_field(cairo_t *cr, struct ts_server *server, double cx, do
 		hint_color = t->accent;
 	} else if (server->auth_failed) {
 		hint = "That password didn't work. Please try again.";
+		hint_color = t->accent;
+	} else if (server->password_long) {
+		snprintf(too_long, sizeof(too_long), "Too long to check: this screen can send %d "
+			"characters at most.", (int)sizeof(server->password) - 1);
+		hint = too_long;
 		hint_color = t->accent;
 	}
 	draw_text(cr, hint, "Inter, sans-serif", 14, 400, cx, fy + fh + 30, text_w,

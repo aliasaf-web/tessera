@@ -32,6 +32,7 @@ ME="$(id -un)"
 SRC="$1"
 PREFIX="$2"
 TESSERA_VERSION="$(cat "$SRC/VERSION")"
+SRC_COMMIT="${SRC_COMMIT-$(git -C "$SRC" rev-parse --short=7 HEAD 2>/dev/null || true)}"
 say() { printf '\\n\\033[1m==> %s\\033[0m\\n' "$*"; }
 warn() { printf '\\033[33m%s\\033[0m\\n' "$*"; }
 fail() { printf '\\n\\033[31m%s\\033[0m\\n\\n' "$*"; exit 1; }
@@ -64,7 +65,8 @@ class Trust(unittest.TestCase):
         self.script.write_text(HARNESS_BEFORE + trust_checks() + HARNESS_AFTER, encoding="utf-8")
         self.script.chmod(0o755)
 
-    def install(self, mode=0o755, version="1.7.1", installed=None, update=False):
+    def install(self, mode=0o755, version="1.7.1", installed=None, update=False,
+                installed_commit=None, folder_commit=None):
         """Runs the checks against a folder with the given permissions, and
         returns its exit status and everything it printed."""
         self.folder.chmod(mode)
@@ -74,8 +76,17 @@ class Trust(unittest.TestCase):
             recorded.unlink(missing_ok=True)
         else:
             recorded.write_text(installed + "\n", encoding="utf-8")
+        note = self.prefix / "share" / "tessera" / "provenance"
+        if installed_commit is None:
+            note.unlink(missing_ok=True)
+        else:
+            note.write_text(f"commit={installed_commit}\n", encoding="utf-8")
         env = {"MODE": "update" if update else "install",
                "PATH": "/usr/bin:/bin:/usr/local/bin"}
+        if folder_commit is not None:
+            # What install.sh works out from git, said here instead: the folder
+            # under test is not a checkout.
+            env["SRC_COMMIT"] = folder_commit
         done = subprocess.run(
             ["/bin/sh", str(self.script), str(self.folder), str(self.prefix)],
             capture_output=True, text=True, env=env)
@@ -110,6 +121,21 @@ class Trust(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("nothing here will change", out, out)
         self.assertIn("git status -sb", out, out)
+
+    def test_the_same_build_under_a_different_number(self):
+        """Two installs of one commit differ only in what the number says, and a
+        folder can carry the same number while holding new work. The commit is
+        what decides, which is the whole reason it is recorded."""
+        code, out = self.install(installed="1.7.0", installed_commit="abc1234",
+                                 folder_commit="abc1234", update=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("nothing here will change", out, out)
+        self.assertIn("abc1234", out, out)
+
+        code, out = self.install(installed="1.7.1", installed_commit="abc1234",
+                                 folder_commit="def5678", update=True)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("nothing here will change", out, out)
 
     def test_no_notice_when_there_is_something_new(self):
         """A newer version in the folder, a first install, and an install with
