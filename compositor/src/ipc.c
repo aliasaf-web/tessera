@@ -16,12 +16,22 @@
  * Requests are plain words ("workspace 2", "lock"); replies and events are
  * one JSON object per line. */
 
-/* The socket lives in the user's private runtime folder; without one there
- * is no safe place for it, so it is not used at all. */
+/* The socket lives in the user's private runtime folder. XDG_RUNTIME_DIR is
+ * set by logind for a normal session; when it is missing (a session started
+ * by hand, or one logind did not take up) the folder logind would have made
+ * is used instead, so the desktop still hangs together. With neither, there
+ * is no safe place for the socket, so it is not used at all.
+ * The shell works the path out the same way (shell/tessera_shell/ipc.py). */
 static bool socket_path(char *buf, size_t size, const char *display) {
 	const char *runtime = getenv("XDG_RUNTIME_DIR");
+	char fallback[64];
 	if (runtime == NULL || runtime[0] != '/') {
-		return false;
+		snprintf(fallback, sizeof(fallback), "/run/user/%lu", (unsigned long)getuid());
+		struct stat st;
+		if (stat(fallback, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) {
+			return false;
+		}
+		runtime = fallback;
 	}
 	int n = snprintf(buf, size, "%s/tessera-%s.sock", runtime,
 		display ? display : "wayland-0");

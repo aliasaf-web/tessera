@@ -2,6 +2,7 @@
 
 import os
 import re
+import tempfile
 
 from gi.repository import Gdk, Gio, Gtk
 
@@ -99,10 +100,37 @@ def read_config():
     return values
 
 
+def config_line(key, value):
+    """One setting as it goes in the file, ready for both readers (the window
+    manager and config_value above): spaces around it are dropped and matching
+    quotes around a value are taken off, so a value that starts and ends with
+    the same quote character is wrapped so that it comes back unchanged.
+    Raises ValueError for anything the file cannot hold: the window manager
+    reads one setting per line, up to 1024 characters, so a value with a line
+    in it, or longer than that, would be read back as something else."""
+    key = str(key).strip()
+    value = str(value)
+    if "\n" in value or "\r" in value or "\n" in key or "\r" in key:
+        raise ValueError(f"{key} cannot be stored: the setting has a line break in it")
+    if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+        value = f'"{value}"'
+    line = f"{key}={value}"
+    if len(line) > 1000:
+        raise ValueError(f"{key} cannot be stored: the setting is too long")
+    return line
+
+
 def write_config_value(key, value):
-    """Change one line of the user's config file, keeping everything else."""
+    """Change one line of the user's config file, keeping everything else.
+
+    The new file is written beside the old one and moved over it, so a power
+    cut or a full disk leaves the settings you had before instead of an empty
+    file; a name from mkstemp means two programs writing at once cannot each
+    finish the other's half-written file. The mode is set, not inherited."""
+    line = config_line(key, value)
     path = config_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
     lines = []
     try:
         with open(path, encoding="utf-8") as f:
@@ -110,18 +138,28 @@ def write_config_value(key, value):
     except OSError:
         pass
     found = False
-    for i, line in enumerate(lines):
-        stripped = line.strip()
+    for i, old_line in enumerate(lines):
+        stripped = old_line.strip()
         if not stripped.startswith("#") and "=" in stripped:
             if stripped.split("=", 1)[0].strip() == key:
-                lines[i] = f"{key}={value}"
+                lines[i] = line
                 found = True
     if not found:
-        lines.append(f"{key}={value}")
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    os.replace(tmp, path)
+        lines.append(line)
+    handle, tmp = tempfile.mkstemp(dir=folder, prefix="config.", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class Theme:

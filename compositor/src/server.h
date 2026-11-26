@@ -438,9 +438,11 @@ struct ts_server {
 	size_t password_len;
 	bool auth_busy;
 	bool auth_failed;
+	bool auth_error;         /* the check itself went wrong, not the password */
 	int auth_failures;       /* wrong passwords in a row */
 	int auth_wait;           /* seconds before the next try is allowed */
 	struct wl_event_source *auth_wait_timer;
+	struct wl_event_source *auth_timeout; /* a check that never answers */
 	pid_t auth_pid;
 	int auth_fd;
 	struct wl_event_source *auth_source;
