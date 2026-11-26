@@ -20,6 +20,18 @@ PREFIX=/usr/local
 ME="$(id -un)"
 TESSERA_VERSION="$(cat "$SRC/VERSION")"
 
+# Which build this is. The version says what was intended, and nothing about
+# whether the folder had it yet - which is exactly the question an update
+# leaves unanswered. So the commit, its branch, and the day it went in are
+# written next to the version, where Settings > About can show them.
+SRC_COMMIT="$(git -C "$SRC" rev-parse --short=7 HEAD 2>/dev/null || true)"
+SRC_BRANCH="$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+SRC_CHANGED=""
+if [ -n "$SRC_COMMIT" ] && [ -n "$(git -C "$SRC" status --porcelain 2>/dev/null | head -n1)" ]; then
+	SRC_CHANGED="yes"
+fi
+BUILT_ON="$(date -u +%Y-%m-%d)"
+
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*"; }
 fail() { printf '\n\033[31m%s\033[0m\n\n' "$*"; exit 1; }
@@ -82,11 +94,30 @@ if [ "$MODE" = "update" ]; then
 	# The folder not having anything new in it is the one way an update can look
 	# like it worked and change nothing, so it is said out loud. Reinstalling the
 	# same version is still allowed: it is how a broken install gets repaired.
+	# Which build this is gets decided by commit rather than by number, because
+	# the number can match while the folder is forty commits along, and can
+	# differ between two builds that are the same. The note the last install left
+	# is what is compared; the version only stands in for installs from before
+	# there was one.
 	INSTALLED_VERSION="$(cat "$PREFIX/share/tessera/VERSION" 2>/dev/null || true)"
-	if [ "$INSTALLED_VERSION" = "$TESSERA_VERSION" ]; then
-		warn "This folder holds version $TESSERA_VERSION, which is what is already"
-		warn "installed, so nothing here will change. If you meant to get a newer"
-		warn "Tessera, this folder may not be on the branch that has it:"
+	INSTALLED_COMMIT="$(sed -n 's/^commit=//p' "$PREFIX/share/tessera/provenance" \
+		2>/dev/null || true)"
+	STALE=""
+	if [ -n "$SRC_COMMIT" ] && [ -n "$INSTALLED_COMMIT" ]; then
+		if [ "$SRC_COMMIT" = "$INSTALLED_COMMIT" ]; then
+			STALE="yes"
+		fi
+	elif [ "$INSTALLED_VERSION" = "$TESSERA_VERSION" ]; then
+		STALE="yes"
+	fi
+	if [ "$STALE" = "yes" ]; then
+		WHAT="$TESSERA_VERSION"
+		if [ -n "$SRC_COMMIT" ]; then
+			WHAT="$TESSERA_VERSION at commit $SRC_COMMIT"
+		fi
+		warn "This folder holds $WHAT, which is what is already installed, so"
+		warn "nothing here will change. If you meant to get a newer Tessera, this"
+		warn "folder may not be on the branch that has it:"
 		warn "    cd $SRC && git status -sb && git log --oneline -1"
 		echo
 	fi
@@ -230,6 +261,24 @@ sudo install -d "$PREFIX/share/tessera/shell"
 sudo rm -rf "$PREFIX/share/tessera/shell/tessera_shell"
 sudo cp -r "$SRC/shell/tessera_shell" "$PREFIX/share/tessera/shell/"
 sudo install -m 644 "$SRC/VERSION" "$PREFIX/share/tessera/VERSION"
+# Left in a folder of ours first because every line of it is written by the
+# person installing, not by a program with root rights.
+PROVENANCE="$(mktemp)"
+{
+	printf 'version=%s\n' "$TESSERA_VERSION"
+	printf 'built=%s\n' "$BUILT_ON"
+	if [ -n "$SRC_COMMIT" ]; then
+		printf 'commit=%s\n' "$SRC_COMMIT"
+	fi
+	if [ -n "$SRC_BRANCH" ]; then
+		printf 'branch=%s\n' "$SRC_BRANCH"
+	fi
+	if [ -n "$SRC_CHANGED" ]; then
+		printf 'changed=yes\n'
+	fi
+} >"$PROVENANCE"
+sudo install -Dm 644 "$PROVENANCE" "$PREFIX/share/tessera/provenance"
+rm -f "$PROVENANCE"
 sudo find "$PREFIX/share/tessera/shell" -name '__pycache__' -prune -exec rm -rf {} +
 for script in tessera-session tessera-autostart tessera-shell tessera-settings; do
 	sudo install -m 755 "$SRC/data/$script" "$PREFIX/bin/$script"
@@ -358,7 +407,11 @@ fi
 # --------------------------------------------------------------- finish
 
 if [ "$MODE" = "update" ]; then
-	say "Tessera is up to date (version $TESSERA_VERSION)"
+	if [ -n "$SRC_COMMIT" ]; then
+		say "Tessera is up to date (version $TESSERA_VERSION, from commit $SRC_COMMIT on $SRC_BRANCH)"
+	else
+		say "Tessera is up to date (version $TESSERA_VERSION)"
+	fi
 	echo
 	echo "  The new version starts after a restart."
 	printf '  Restart now? Save your work first. [y/N] '

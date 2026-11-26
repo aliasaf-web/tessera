@@ -151,6 +151,7 @@ void lock_engage(struct ts_server *server) {
 		switcher_finish(server, false);
 	}
 	server->password_len = 0;
+	server->password_long = false;
 	explicit_bzero(server->password, sizeof(server->password));
 	server->auth_failed = false;
 	server->auth_error = false;
@@ -174,6 +175,7 @@ static void lock_release(struct ts_server *server) {
 	server->auth_wait = 0;
 	wl_event_source_timer_update(server->auth_wait_timer, 0);
 	server->password_len = 0;
+	server->password_long = false;
 	explicit_bzero(server->password, sizeof(server->password));
 	/* The windows come back before the lock screen goes away, so the screen
 	 * is never empty for a moment. */
@@ -232,7 +234,7 @@ static int pam_conversation(int num, const struct pam_message **msg,
  * and writes "1" (correct) or "0" to stdout. Running this as a separate
  * program keeps PAM out of the desktop's own process. */
 int lock_auth_helper_main(void) {
-	char password[512];
+	char password[TS_PASSWORD_MAX];
 	size_t len = 0;
 	ssize_t n;
 	while (len < sizeof(password) - 1 &&
@@ -403,6 +405,12 @@ static void start_auth(struct ts_server *server) {
 }
 
 static void remove_last_utf8(struct ts_server *server) {
+	/* The notice stays while anything of the over-long password is left, so
+	 * deleting a character cannot quietly turn a truncated password back into
+	 * one we are willing to send. */
+	if (server->password_len == 0) {
+		server->password_long = false;
+	}
 	while (server->password_len > 0) {
 		unsigned char c = server->password[--server->password_len];
 		server->password[server->password_len] = '\0';
@@ -435,6 +443,9 @@ static void append_utf8(struct ts_server *server, uint32_t cp) {
 		n = 4;
 	}
 	if (server->password_len + n >= sizeof(server->password)) {
+		/* Dropping the rest silently is the part worth fixing: whoever is typing
+		 * has no way to see that the field stopped listening. */
+		server->password_long = true;
 		return;
 	}
 	memcpy(server->password + server->password_len, out, n);
@@ -573,7 +584,9 @@ bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepo
 	switch (sym) {
 	case XKB_KEY_Return:
 	case XKB_KEY_KP_Enter:
-		if (server->password_len > 0) {
+		/* Asking about a password we know to be incomplete wastes an attempt, and
+		 * the wait that follows one; say what is wrong instead. */
+		if (server->password_len > 0 && !server->password_long) {
 			start_auth(server);
 		}
 		return true;
@@ -582,6 +595,7 @@ bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepo
 		break;
 	case XKB_KEY_Escape:
 		server->password_len = 0;
+		server->password_long = false;
 		explicit_bzero(server->password, sizeof(server->password));
 		break;
 	default:
