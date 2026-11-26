@@ -197,14 +197,11 @@ static int paint_window(struct client *client) {
 
 /* ------------------------------------------------------------------ popup */
 
-/* xdg-shell asks for these four even though this client has no use for them: at
- * the version bound above, a listener with a hole in it is an abort, not a
- * warning - see the note by `head_listener`. The surface's `destroy` is the
- * desktop retiring our window's role, by which point no test is left waiting on
- * anything this client could say. */
-static void xdg_surface_destroyed(void *data, struct xdg_surface *surface) {
-}
-
+/* xdg-shell asks for these three even though this client has no use for them:
+ * at the version bound above, a listener with a hole in it is an abort, not a
+ * warning - see the note by `head_listener`. `xdg_surface` is not one of them:
+ * its `destroy` is a request the client sends, not an event, and the one event
+ * it does have is the configure this file already answers. */
 static void toplevel_configure_bounds(void *data, struct xdg_toplevel *toplevel,
 		int32_t width, int32_t height) {
 }
@@ -778,7 +775,6 @@ static void xdg_surface_configure(void *data, struct xdg_surface *surface, uint3
 
 static const struct xdg_surface_listener xdg_surface_listener = {
 	.configure = xdg_surface_configure,
-	.destroy = xdg_surface_destroyed,
 };
 
 static void toplevel_configure(void *data, struct xdg_toplevel *toplevel, int32_t width,
