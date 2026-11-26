@@ -436,6 +436,10 @@ static struct zwlr_output_configuration_head_v1 *begin(struct client *client, co
 	}
 	client->config = zwlr_output_manager_v1_create_configuration(client->output_manager,
 		(uint32_t)client->manager_serial);
+	if (client->config == NULL) {
+		say("%s refused\n", verb);
+		return NULL;
+	}
 	zwlr_output_configuration_v1_add_listener(client->config, &config_listener, client);
 	snprintf(client->config_verb, sizeof(client->config_verb), "%s", verb);
 	return zwlr_output_configuration_v1_enable_head(client->config, head->head);
@@ -452,7 +456,7 @@ static void command_place(struct client *client, const char *verb, char *args, i
 	}
 	struct zwlr_output_configuration_head_v1 *cfg_head = begin(client, verb, head);
 	if (cfg_head == NULL) {
-		return;
+		return;   /* busy, refused, or not listening; begin() said which */
 	}
 	zwlr_output_configuration_head_v1_set_position(cfg_head, x, y);
 	if (strcmp(verb, "test") == 0) {
@@ -477,12 +481,20 @@ static void command_allmodes(struct client *client, int width, int height) {
 		say("allmodes no-heads\n");
 		return;
 	}
-	if (client->config != NULL || !client->manager_ready || client->output_manager == NULL) {
+	if (client->config != NULL) {
+		say("allmodes busy\n");
+		return;
+	}
+	if (!client->manager_ready || client->output_manager == NULL) {
 		say("allmodes unavailable\n");
 		return;
 	}
 	client->config = zwlr_output_manager_v1_create_configuration(client->output_manager,
 		(uint32_t)client->manager_serial);
+	if (client->config == NULL) {
+		say("allmodes refused\n");
+		return;
+	}
 	zwlr_output_configuration_v1_add_listener(client->config, &config_listener, client);
 	snprintf(client->config_verb, sizeof(client->config_verb), "allmodes");
 	for (int i = 0; i < client->n_heads; i++) {
@@ -491,6 +503,13 @@ static void command_allmodes(struct client *client, int width, int height) {
 		}
 		struct zwlr_output_configuration_head_v1 *cfg_head =
 			zwlr_output_configuration_v1_enable_head(client->config, client->heads[i].head);
+		if (cfg_head == NULL) {
+			/* The compositor will not let this one be configured. Saying so is
+			 * the point of the client; asking it anyway is a crash in a file the
+			 * test is not reading. */
+			say("allmodes no-head %s\n", client->heads[i].name);
+			return;
+		}
 		zwlr_output_configuration_head_v1_set_custom_mode(cfg_head, width, height, 60000);
 		zwlr_output_configuration_head_v1_set_position(cfg_head, 0, 0);
 	}
