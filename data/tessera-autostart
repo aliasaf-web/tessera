@@ -13,16 +13,49 @@ fi
 state="${XDG_STATE_HOME:-$HOME/.local/state}/tessera"
 mkdir -p "$state"
 
+# The same figures tessera-session uses when it rotates the logs, so the log has
+# one size rather than two ideas of it.
+LOG_KEEP=$((4 * 1024 * 1024))
+LOG_TAIL=$((256 * 1024))
+
+# Trims the bar's log to its last part, which is where anything worth reading
+# about the last run will be.
+trim_log() {
+	if [ -f "$state/shell.log" ] &&
+			[ "$(stat -c %s "$state/shell.log" 2>/dev/null || echo 0)" -gt "$LOG_KEEP" ]; then
+		tail -c "$LOG_TAIL" "$state/shell.log" >"$state/shell.log.trim" &&
+			mv -f "$state/shell.log.trim" "$state/shell.log"
+	fi
+}
+
 # The bar, launcher and quick settings. Restart them if they ever stop
 # while this desktop is still running (TESSERA_PID is the window manager).
 (
+	delay=2
 	while :; do
+		trim_log
 		started=$(date +%s)
 		tessera-shell >>"$state/shell.log" 2>&1
-		if [ $(( $(date +%s) - started )) -lt 10 ]; then
-			sleep 5
-		fi
+		# How long the bar itself lasted, measured now: a wait of one's own
+		# counted as a healthy run resets the delay every few restarts, and the
+		# loop goes back to crashing at full speed.
+		ran=$(( $(date +%s) - started ))
 		kill -0 "${TESSERA_PID:-}" 2>/dev/null || break
+		# Always wait before starting the bar again, and wait longer while it keeps
+		# dying quickly. A bar that fails at once - a half-installed update, a
+		# setting it cannot read - used to relaunch as fast as it could, every
+		# attempt mapping windows over the desktop and burying its own reason in the
+		# log. After a run that lasted, it is started again promptly.
+		sleep "$delay"
+		kill -0 "${TESSERA_PID:-}" 2>/dev/null || break
+		if [ "$ran" -ge 10 ]; then
+			delay=2
+		elif [ "$delay" -lt 60 ]; then
+			delay=$(( delay * 2 ))
+			if [ "$delay" -gt 60 ]; then
+				delay=60
+			fi
+		fi
 	done
 ) &
 

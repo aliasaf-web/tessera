@@ -17,10 +17,27 @@ export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
 
 state="${XDG_STATE_HOME:-$HOME/.local/state}/tessera"
 mkdir -p "$state"
+
+# One log per session, with the previous one kept only as far as it is worth
+# reading. Nothing else caps these files: a desktop that has been running for
+# months, or one that found something to complain about every few seconds, would
+# otherwise fill the disk with the record of it. What is kept is the end, because
+# the reason is nearly always in what happened just before. The same figures are
+# in tessera-autostart, which trims the log while the desktop is up.
+LOG_KEEP=$((4 * 1024 * 1024))
+LOG_TAIL=$((256 * 1024))
+keep_small() {
+	if [ -f "$1" ] && [ "$(stat -c %s "$1" 2>/dev/null || echo 0)" -gt "$LOG_KEEP" ]; then
+		tail -c "$LOG_TAIL" "$1" >"$1.trim" && mv -f "$1.trim" "$1"
+	fi
+}
 for log in tessera shell; do
 	if [ -f "$state/$log.log" ]; then
 		mv -f "$state/$log.log" "$state/$log.log.old"
 	fi
+	# Trimmed after the move, because what needs trimming is the log that just
+	# ended: that is the one that grew while nobody was looking at it.
+	keep_small "$state/$log.log.old"
 done
 
 if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && [ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ] &&

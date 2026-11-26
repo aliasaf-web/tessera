@@ -6,7 +6,14 @@ name: Checks
 
 on:
   push:
+    # A change to prose is not something a build can be wrong about, and the
+    # README is rewritten by tests rather than reviewed by one. Everything that
+    # a build *could* catch - including this file - still runs.
+    paths-ignore:
+      - "**.md"
   pull_request:
+    paths-ignore:
+      - "**.md"
 
 # A push while the previous run of the same branch is still going makes the
 # older one pointless: it is cancelled so the newest result comes sooner.
@@ -39,7 +46,9 @@ jobs:
             python3 python3-gi gir1.2-gtk-4.0 gir1.2-gtk4layershell-1.0 \
             gir1.2-adw-1 gir1.2-gdkpixbuf-2.0 flake8 shellcheck
 
-      - uses: actions/checkout@v4
+      # Pinned to a commit rather than to the moving `v4` tag: this action gets
+      # to run on every pull request, and what it checks out is what then runs.
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v7.0.1
 
       - name: Build the window manager (warnings are errors)
         run: |
@@ -100,7 +109,9 @@ jobs:
         run: |
           apt-get install -y --no-install-recommends libasan8 libubsan1
 
-      - uses: actions/checkout@v4
+      # Pinned to a commit rather than to the moving `v4` tag: this action gets
+      # to run on every pull request, and what it checks out is what then runs.
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v7.0.1
 
       - name: Build and test with AddressSanitizer and UndefinedBehaviorSanitizer
         run: |

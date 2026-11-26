@@ -1,8 +1,26 @@
-// Let members of the netdev group manage Wi-Fi and network connections
-// without being asked for the administrator password.
+// What the quick-settings panel may do to the network without asking for the
+// administrator password. Each line here is one thing a person can click at
+// the bottom right of the screen, and nothing else: the desktop does not get
+// to turn all networking off, put NetworkManager to sleep, or reload its
+// configuration from the panel.
+//
+// Members of the netdev group only, only on this machine, only in the session
+// they are logged into - so a remote login cannot use them.
 polkit.addRule(function(action, subject) {
-    if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0 &&
-            subject.isInGroup("netdev") && subject.local && subject.active) {
+    var allowed = {
+        // The Wi-Fi switch itself.
+        "org.freedesktop.NetworkManager.enable-disable-wifi": true,
+        // Asking for a fresh list of networks when the cached one is stale.
+        "org.freedesktop.NetworkManager.wifi.scan": true,
+        // Joining a network, and leaving one.
+        "org.freedesktop.NetworkManager.network-control": true,
+        // Saving the password of a network this machine joins for everyone...
+        "org.freedesktop.NetworkManager.settings.modify.system": true,
+        // ...or just for you.
+        "org.freedesktop.NetworkManager.settings.modify.own": true,
+    };
+    if (allowed[action.id] && subject.isInGroup("netdev") && subject.local &&
+            subject.active) {
         return polkit.Result.YES;
     }
 });

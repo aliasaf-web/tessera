@@ -15,15 +15,30 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shell"))
 
-import gi  # noqa: E402
+try:
+    import gi  # noqa: E402
 
-gi.require_version("Gtk", "4.0")
-gi.require_version("Gdk", "4.0")
-gi.require_version("Pango", "1.0")
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Gdk", "4.0")
+    gi.require_version("Pango", "1.0")
+    from gi.repository import GLib  # noqa: E402
+    from tessera_shell import clock, ipc, terminal, theme  # noqa: E402
+    GTK = None
+except (ImportError, ValueError) as missing:
+    # The bindings are their own packages (python3-gi and the .typelib files), so
+    # a plain container has this suite and not the desktop the suite looks at.
+    # Skipping with a reason says "nothing was checked here"; a bare ImportError
+    # says "this patch is broken". Neither is allowed to look like a pass, which
+    # is what a red run that nobody can read is.
+    GTK = missing
 
-from tessera_shell import ipc, terminal, theme  # noqa: E402
+
+def needs_gtk(test):
+    """Skips a test that reaches through the GTK bindings, naming why."""
+    return unittest.skipUnless(GTK is None, f"no GTK bindings on this machine ({GTK})")(test)
 
 
+@needs_gtk
 class ConfigFile(unittest.TestCase):
     """The shell must read tests/config-sample exactly as the window manager
     does (compositor/tests/config_test.c checks the same file)."""
@@ -91,6 +106,7 @@ class ConfigFile(unittest.TestCase):
                 self.assertEqual(values["wallpaper"], '"/home/me/My \"sea\".png"')
 
 
+@needs_gtk
 class SocketPath(unittest.TestCase):
     """Where the shell looks for the window manager's control socket, which
     has to be where the window manager puts it (compositor/src/ipc.c)."""
@@ -124,11 +140,27 @@ class SocketPath(unittest.TestCase):
                 self.assertIsNone(ipc.socket_path())
                 self.assertIsNone(ipc.runtime_dir())
 
-    def test_the_variable_wins_over_the_folder(self):
-        with mock.patch.dict(os.environ, {"TESSERA_SOCK": "/tmp/elsewhere.sock"}):
-            self.assertEqual(ipc.socket_path(), "/tmp/elsewhere.sock")
+    def test_the_folder_wins_when_the_desktop_is_there(self):
+        """A program of yours that sets TESSERA_SOCK would otherwise point the
+        bar at a desktop of its own, and its answers would look real."""
+        with tempfile.TemporaryDirectory() as home:
+            real = os.path.join(home, "tessera-wayland-0.sock")
+            pathlib.Path(real).write_text("", encoding="utf-8")
+            env = {"XDG_RUNTIME_DIR": home, "TESSERA_SOCK": "/tmp/elsewhere.sock"}
+            with mock.patch.dict(os.environ, env, clear=False):
+                env.pop("WAYLAND_DISPLAY", None)
+                self.assertEqual(ipc.socket_path(), real)
+
+    def test_the_variable_is_the_fallback(self):
+        """A desktop that put its socket elsewhere still reaches its own bar:
+        it exports the variable, and nothing is in the folder to disagree."""
+        with tempfile.TemporaryDirectory() as home:
+            env = {"XDG_RUNTIME_DIR": home, "TESSERA_SOCK": "/tmp/elsewhere.sock"}
+            with mock.patch.dict(os.environ, env, clear=False):
+                self.assertEqual(ipc.socket_path(), "/tmp/elsewhere.sock")
 
 
+@needs_gtk
 class Accents(unittest.TestCase):
     """The accent colours are listed in the window manager and in the shell;
     they must be the same."""
@@ -154,6 +186,7 @@ class Accents(unittest.TestCase):
         self.assertIn(theme.on_accent(theme.accent_hex("#ffffff", True)), ("#111111", "#ffffff"))
 
 
+@needs_gtk
 class Terminal(unittest.TestCase):
     def which(self, *installed):
         return mock.patch("shutil.which", lambda name: name if name in installed else None)
@@ -180,6 +213,7 @@ class Terminal(unittest.TestCase):
                              ["x-terminal-emulator", "-e", "true"])
 
 
+@needs_gtk
 class Notifications(unittest.TestCase):
     def setUp(self):
         try:
@@ -200,6 +234,49 @@ class Notifications(unittest.TestCase):
 
     def test_broken_markup(self):
         self.assertEqual(self.safe_markup("<b>open"), "open")
+
+
+@needs_gtk
+class Dates(unittest.TestCase):
+    """The time and date the bar and the panel show, said in one place.
+
+    The bug this holds shut is the format string: the day of the month with no
+    leading zero is written `%-d` by glibc and printed out as typed by other C
+    libraries, so a widget that spelled it that way would show
+    `Saturday %-d November` on anything but Debian.
+    """
+
+    def day(self, number):
+        # The 7th or the 26th of November 2026, at noon, in this machine's zone:
+        # only the day of the month is what these tests are about.
+        return GLib.DateTime.new_local(2026, 11, number, 12, 0, 0)
+
+    def test_the_day_of_the_month_has_no_leading_zero(self):
+        for number, expected in ((7, "7"), (26, "26")):
+            words = clock.date_text(at=self.day(number)).split()
+            self.assertEqual(words[1], expected, words)
+
+    def test_no_format_letters_leak_into_what_you_see(self):
+        for with_year in (False, True):
+            text = clock.date_text(with_year=with_year, at=self.day(7))
+            self.assertNotIn("%", text, text)
+            self.assertNotIn("-", text.split()[1], text)
+
+    def test_the_year_only_shows_when_there_is_room_for_it(self):
+        self.assertTrue(clock.date_text(with_year=True, at=self.day(7)).endswith("2026"))
+        self.assertNotIn("2026", clock.date_text(at=self.day(7)))
+
+    def test_the_bar_clock_is_two_digits_a_colon_and_two_more(self):
+        self.assertRegex(clock.clock_text(at=self.day(7)), r"^\d\d:\d\d$")
+
+    def test_asking_for_this_moment_works_too(self):
+        """The widgets pass no time of their own, so the no-argument path is the
+        one that matters: it is where a constructor named one letter off hides."""
+        self.assertRegex(clock.clock_text(), r"^\d\d:\d\d$")
+        for with_year in (False, True):
+            text = clock.date_text(with_year=with_year)
+            self.assertNotIn("%", text, text)
+            self.assertGreaterEqual(len(text.split()), 3, text)
 
 
 class Readme(unittest.TestCase):

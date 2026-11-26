@@ -1,10 +1,8 @@
 """Quick settings: Wi-Fi, Bluetooth, dark mode, sound, brightness, power."""
 
-import time
-
 from gi.repository import GLib, Gtk
 
-from . import ipc, services
+from . import clock, ipc, services
 from .theme import write_config_value
 from .launcher import ConfirmButton
 from .layer import (button, clear, click_outside_closes, fullscreen_overlay, hbox,
@@ -564,7 +562,7 @@ class QuickSettings:
         bat = self.shell.battery
         self.battery_row.set_visible(bat.present)
         self.date_label.set_visible(not bat.present)
-        self.date_label.set_label(time.strftime("%A %-d %B"))
+        self.date_label.set_label(clock.date_text())
         if bat.present:
             self.battery_icon.set_from_icon_name(bat.icon_name)
             self.battery_label.set_label(bat.describe())
@@ -592,7 +590,7 @@ class QuickSettings:
         set_monitor(self.window, monitor)
         self.place()
         self.open_page("main")
-        self.date_label.set_label(time.strftime("%A %-d %B"))
+        self.date_label.set_label(clock.date_text())
         self.shell.audio.refresh()
         self.shell.network.refresh()
         self.window.present()

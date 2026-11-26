@@ -513,11 +513,26 @@ int ipc_client_main(int argc, char **argv) {
 	}
 	line[o++] = '\n';
 
+	/* Where to find the desktop. The runtime folder is the truth about where its
+	 * socket is, so it is looked at first. Otherwise any program of
+	 * yours could set TESSERA_SOCK and point `tessera msg` - and the bar - at a
+	 * desktop of its own, whose answers about what is open, or whether the screen
+	 * is locked, would look exactly like the real ones. The variable is still
+	 * honoured when the folder has no socket in it, which is how the window
+	 * manager tells the programs it starts where it put its own, and how a test
+	 * aims at a desktop of its own. */
 	char path[108];
+	char in_folder[108];
 	const char *env = getenv("TESSERA_SOCK");
-	if (env && env[0]) {
+	bool derived = socket_path(in_folder, sizeof(in_folder), getenv("WAYLAND_DISPLAY"));
+	if (derived && access(in_folder, F_OK) == 0) {
+		snprintf(path, sizeof(path), "%s", in_folder);
+	} else if (env && env[0]) {
 		snprintf(path, sizeof(path), "%s", env);
-	} else if (!socket_path(path, sizeof(path), getenv("WAYLAND_DISPLAY"))) {
+	} else if (derived) {
+		fprintf(stderr, "Tessera does not seem to be running (%s)\n", in_folder);
+		return 1;
+	} else {
 		fprintf(stderr, "XDG_RUNTIME_DIR is not set, so Tessera can't be reached\n");
 		return 1;
 	}

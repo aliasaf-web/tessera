@@ -12,6 +12,8 @@ printf 'Continue? [y/N] '
 read -r answer </dev/tty || answer=""
 case "$answer" in y|Y|yes) ;; *) exit 1 ;; esac
 
+# tessera-login has not been part of the desktop since 1.1; it is named here so
+# that an install from those versions does not keep a program nothing starts.
 sudo rm -f "$PREFIX/bin/tessera" "$PREFIX/bin/tessera-session" "$PREFIX/bin/tessera-login" \
 	"$PREFIX/bin/tessera-autostart" "$PREFIX/bin/tessera-shell" "$PREFIX/bin/tessera-settings" \
 	"$PREFIX/bin/tessera-update" "$PREFIX/share/applications/org.tessera.Settings.desktop"
@@ -76,5 +78,9 @@ echo "  - the programs it installed; to remove the ones nothing else uses, run:"
 echo "      sudo apt autoremove"
 echo "  - your account's membership of the netdev, bluetooth, video and audio"
 echo "    groups, which let you use Wi-Fi, Bluetooth, brightness and sound"
+echo "    without a password. They are left alone because other programs on this"
+echo "    computer may rely on them; to take one back, run"
+echo "      sudo gpasswd -d $ME netdev"
+echo "    for the group you mean, and log out and in again."
 echo "  - the light/dark choice and icons for apps, and Thunar as the app for folders"
 echo "Restart with:  sudo reboot   (you will get the normal text login, user $ME)"
