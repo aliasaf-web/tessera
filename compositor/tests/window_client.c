@@ -57,7 +57,10 @@ struct client {
 	int idle_ms;
 };
 
-/* One line, out now: a test should not have to wonder whether we are thinking. */
+/* One line, out now: a test should not have to wonder whether we are thinking.
+ * The printf attribute is what lets the compiler check the lines below. */
+static void say(const char *format, ...) __attribute__((format(printf, 1, 2)));
+
 static void say(const char *format, ...) {
 	va_list args;
 	va_start(args, format);

@@ -50,10 +50,14 @@ jobs:
       # to run on every pull request, and what it checks out is what then runs.
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v7.0.1
 
+      # The build goes to a log the reporter at the end reads, because a failed
+      # compile says so in the Actions log only - and the log is on a host that a
+      # restricted network cannot reach, which leaves a red tick and no reason.
       - name: Build the window manager (warnings are errors)
         run: |
-          meson setup build compositor -Dwerror=true
-          ninja -C build
+          meson setup build compositor -Dwerror=true 2>&1 \
+            | tee "${RUNNER_TEMP:-/tmp}/build.log"
+          ninja -C build 2>&1 | tee -a "${RUNNER_TEMP:-/tmp}/build.log"
 
       # The other checks in this job compare files with each other; this one
       # reads the desktop's C. It runs after the build, where wlroots' headers
@@ -153,7 +157,7 @@ jobs:
           # warning the sanitizers provoke should not hide what they found. The
           # job above is the one that treats warnings as errors.
           meson setup build-sanitizer compositor -Db_sanitize=address,undefined
-          ninja -C build-sanitizer
+          ninja -C build-sanitizer 2>&1 | tee "${RUNNER_TEMP:-/tmp}/build.log"
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
             meson test -C build-sanitizer --print-errorlogs 2>&1 \
             | tee "${RUNNER_TEMP:-/tmp}/meson.log"

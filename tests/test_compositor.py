@@ -440,6 +440,11 @@ class TestWindow:
     program that connects while the screen is locked, and whether a window that
     is closed from the control socket really goes away. The client prints one
     line per event and flushes it, so a test reads lines rather than guessing.
+
+    Its stdin stays a pipe this side owns: the client treats a word written
+    there as "finish now", and an inherited stdin that is already at the end
+    (which is what a test run under Actions has) reads as that word at once, so
+    the window closed before the desktop had said anything about it.
     """
 
     @classmethod
@@ -463,7 +468,8 @@ class TestWindow:
         # every wait below is shorter than that.
         process = subprocess.Popen(
             [CLIENT, "--window", "--idle-ms", "60000", *extra],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, env=env)
         self.processes.append(process)
         lines = self.read_lines(process, wait_for)
         if not any(line.startswith(wait_for) for line in lines):

@@ -13,7 +13,10 @@ Usage: python3 tools/ci-annotate.py FILE...
 
 It reads the files given (missing ones are skipped), prints one error line per
 failed or errored test, and always exits successfully: a reporter that itself
-turns a run red would be a poor reporter.
+turns a run red would be a poor reporter. A log with no test failures in it at
+all is a build that stopped or a program that crashed, so the lines the compiler
+or meson complained in are printed instead - those are the whole of what a red
+build says, and the tail of the log around them is kept for context.
 """
 
 import pathlib
@@ -32,6 +35,12 @@ HEAD = 160
 FAILURE_HEAD = re.compile(r"^(?:FAIL|ERROR): .*$", re.M)
 RAN = re.compile(r"^Ran \d+ tests.*$", re.M)
 SUMMARY = re.compile(r"^(?:FAILED|OK).*$", re.M)
+SUMMARY_OK = re.compile(r"^OK\s*$", re.M)
+# What a build says when it refuses, and the only part of a build log worth
+# putting in front of someone: gcc and clang put a file and line in front of the
+# message, meson writes `ERROR:` from its setup step, and ninja only ever says a
+# subcommand failed - which is why the last lines come along with them.
+BUILD_LINE = re.compile(r":\d+:\d+: (?:error|warning): |\bERROR: |^ninja: build stopped")
 
 
 def escape(text):
@@ -67,28 +76,74 @@ def reports(text):
     return found
 
 
+def build_reports(text):
+    """The lines a build or a tool complained in, oldest first, without the
+    repeats that a rebuild of the same file writes once per mode."""
+    seen, kept = set(), []
+    for line in text.splitlines():
+        if not BUILD_LINE.search(line):
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        kept.append(line)
+    return kept[:MAX_BLOCKS]
+
+
+def annotations(text):
+    """The `::error::` and `::warning::` lines for a run's log output, in the
+    order they should be written."""
+    found = reports(text)
+    if found:
+        out = [f"::error title={escape(title[:180])}::{escape(block)}"
+               for title, block in found[:MAX_BLOCKS]]
+        if len(found) > MAX_BLOCKS:
+            out.append(f"::warning title=more failures::{len(found) - MAX_BLOCKS} further "
+                       "failure reports are in the log, not here")
+        summary = SUMMARY.findall(text)
+        if summary:
+            out.append(f"::error title=unittest summary::{escape('; '.join(summary[-3:]))}")
+        return out
+
+    # Nothing that looks like a test failure. Whatever made the step red, its own
+    # complaint is worth more than the tail of a log - and for a build, the tail
+    # is mostly ninja naming the files it got through.
+    tail = text.strip().splitlines()[-30:]
+    complaints = build_reports("\n".join(tail) if tail else text)
+    if complaints:
+        kept = [line for line in tail[-8:] if line not in complaints]
+        lines = complaints + (["", "last lines:"] + kept if kept else [])
+        body = "\n".join(lines)
+        title = "the step failed; what it complained about"
+    elif SUMMARY_OK.search(text):
+        # The suite was green and something else went red - a linter, a shell
+        # check. Saying so is worth more than an error quoting `OK`.
+        body = "\n".join(tail) or "nothing was written to a log"
+        title = "the tests passed; the failure was in another step"
+    else:
+        body = "\n".join(tail) or "nothing was written to a log"
+        title = "the run went red without a failure report"
+    return [f"::error title={escape(title)}::{escape(shorten(body))}"]
+
+    out = [f"::error title={escape(title[:180])}::{escape(block)}"
+           for title, block in found[:MAX_BLOCKS]]
+    if len(found) > MAX_BLOCKS:
+        out.append(f"::warning title=more failures::{len(found) - MAX_BLOCKS} further failure "
+                   "reports are in the log, not here")
+    summary = SUMMARY.findall(text)
+    if summary:
+        out.append(f"::error title=unittest summary::{escape('; '.join(summary[-3:]))}")
+    return out
+
+
 def main(paths):
     text = ""
     for name in paths:
         path = pathlib.Path(name)
         if path.is_file():
             text += path.read_text(encoding="utf-8", errors="replace") + "\n"
-    found = reports(text)
-    summary = SUMMARY.findall(text)
-    if not found:
-        # Nothing that looks like a test failure: whatever made the step red,
-        # the last lines are where a build or a crash would say so.
-        tail = "\n".join(text.strip().splitlines()[-30:]) or "the tests wrote nothing"
-        print("::error::the tests went red without a failure report. "
-              f"Last of what they wrote: {escape(shorten(tail))}")
-        return 0
-    for title, block in found[:MAX_BLOCKS]:
-        print(f"::error title={escape(title[:180])}::{escape(block)}")
-    if len(found) > MAX_BLOCKS:
-        print(f"::warning title=more failures::{len(found) - MAX_BLOCKS} further failure "
-              "reports are in the log, not here")
-    if summary:
-        print(f"::error title=unittest summary::{escape('; '.join(summary[-3:]))}")
+    for line in annotations(text):
+        print(line)
     return 0
 
 

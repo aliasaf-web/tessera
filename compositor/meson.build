@@ -97,24 +97,38 @@ executable(
 wayland_client = dependency('wayland-client')
 xdg_shell_xml = protocols_dir / 'stable/xdg-shell/xdg-shell.xml'
 
-executable(
-	'tessera-test-window',
+xdg_shell_client_header = custom_target(
+	'xdg-shell client header',
+	input: xdg_shell_xml,
+	output: 'xdg-shell-client-protocol.h',
+	command: [scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+
+# The scanner's own output is written to be compiled, not to be warned about, and
+# it is nobody's business to fix it here. It goes in a library of its own with
+# warnings not fatal, because `-Dwerror=true` would otherwise make a red build of
+# a file no one wrote - the way it did the first time this target was built. The
+# client above keeps the strict build, since that file is ours.
+xdg_shell_client_code = static_library(
+	'xdg-shell client code',
 	[
-		'tests/window_client.c',
 		custom_target(
-			'xdg-shell client header',
-			input: xdg_shell_xml,
-			output: 'xdg-shell-client-protocol.h',
-			command: [scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
-		),
-		custom_target(
-			'xdg-shell client code',
+			'xdg-shell client protocol code',
 			input: xdg_shell_xml,
 			output: 'xdg-shell-protocol.c',
 			command: [scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 		),
+		xdg_shell_client_header,
 	],
 	dependencies: [wayland_client],
+	override_options: ['werror=false'],
+)
+
+executable(
+	'tessera-test-window',
+	['tests/window_client.c', xdg_shell_client_header],
+	dependencies: [wayland_client],
+	link_with: xdg_shell_client_code,
 	build_by_default: true,
 	install: false,
 )
