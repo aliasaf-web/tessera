@@ -174,7 +174,9 @@ and turns off as usual.
 The lock screen has **Sleep**, **Restart** and **Shut down** buttons at the
 bottom (Restart and Shut down ask you to click twice, because open apps close).
 The power button puts the laptop to sleep from there. If Caps Lock is on, the
-lock screen tells you.
+lock screen tells you. A machine without a keyboard can still unlock: an
+on-screen keyboard or a switch device can type the password there, and a wrong
+one from either waits exactly as long as a wrong one from a keyboard.
 
 While the screen is locked the desktop behind it isn't drawn at all, so a
 program watching the screen sees only the lock screen; nothing that starts while
