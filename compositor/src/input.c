@@ -1564,33 +1564,24 @@ static void request_start_drag(struct wl_listener *listener, void *data) {
 	}
 }
 
-struct drag_icon {
-	struct wlr_scene_tree *tree;
-	struct wl_listener destroy;
-};
-
-static void drag_icon_destroy(struct wl_listener *listener, void *data) {
-	struct drag_icon *icon = wl_container_of(listener, icon, destroy);
-	wl_list_remove(&icon->destroy.link);
-	wlr_scene_node_destroy(&icon->tree->node);
-	free(icon);
-}
-
+/* The icon that follows the pointer while a file is dragged between two
+ * programs. The tree belongs to wlroots, not to us: wlr_scene_drag_icon_create()
+ * adds its own listener to the icon's destroy signal and takes the tree down
+ * there, and it frees the wrapper it allocated when that tree goes.
+ *
+ * This used to keep the tree as well and destroy it a second time when the drag
+ * ended - a node wlroots had already freed. Dragging a file from one program to
+ * another therefore killed the session and put the login screen back, every
+ * time. Nothing here may destroy that tree. */
 static void start_drag(struct wl_listener *listener, void *data) {
 	struct ts_server *server = wl_container_of(listener, server, start_drag);
 	struct wlr_drag *drag = data;
 	if (drag->icon == NULL) {
 		return;
 	}
-	struct drag_icon *icon = calloc(1, sizeof(*icon));
-	if (icon == NULL) {
+	if (wlr_scene_drag_icon_create(server->drag_icons, drag->icon) == NULL) {
 		wlr_log(WLR_ERROR, "Out of memory");
-		return;
 	}
-	icon->tree = wlr_scene_drag_icon_create(server->drag_icons, drag->icon);
-	icon->destroy.notify = drag_icon_destroy;
-	wl_signal_add(&drag->icon->events.destroy, &icon->destroy);
-	drag->icon->data = icon->tree;
 }
 
 
