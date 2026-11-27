@@ -155,6 +155,7 @@ void lock_engage(struct ts_server *server) {
 	explicit_bzero(server->password, sizeof(server->password));
 	server->auth_failed = false;
 	server->auth_error = false;
+	server->auth_refused = false;
 	wlr_seat_keyboard_notify_clear_focus(server->seat);
 	wlr_seat_pointer_clear_focus(server->seat);
 	input_constraint_update(server); /* lets go of a held pointer */
@@ -230,8 +231,20 @@ static int pam_conversation(int num, const struct pam_message **msg,
 	return PAM_SUCCESS;
 }
 
+/* What the helper writes back, one byte:
+ *   '1' the password is right and the account may be used
+ *   '0' the password is wrong
+ *   '2' the check could not run at all (PAM would not start, no passwd entry)
+ *   '3' the password is right, but the account may not sign in here
+ * The last two are not the user's fault and are not counted as a wrong
+ * password: reporting them as one both lies and adds a wait nobody earned. */
+#define AUTH_RIGHT '1'
+#define AUTH_WRONG '0'
+#define AUTH_NO_ANSWER '2'
+#define AUTH_ACCOUNT '3'
+
 /* `tessera --auth-helper`: reads a password on stdin, checks it with PAM
- * and writes "1" (correct) or "0" to stdout. Running this as a separate
+ * and writes one of the bytes above to stdout. Running this as a separate
  * program keeps PAM out of the desktop's own process. */
 int lock_auth_helper_main(void) {
 	char password[TS_PASSWORD_MAX];
@@ -244,23 +257,36 @@ int lock_auth_helper_main(void) {
 	password[len] = '\0';
 
 	struct passwd *pw = getpwuid(getuid());
-	char ok = '0';
+	char ok = AUTH_NO_ANSWER;
 	if (pw != NULL) {
 		struct pam_data data = { .password = password };
 		struct pam_conv conv = { pam_conversation, &data };
 		pam_handle_t *handle = NULL;
 		if (pam_start("tessera", pw->pw_name, &conv, &handle) == PAM_SUCCESS) {
-			if (pam_authenticate(handle, 0) == PAM_SUCCESS) {
-				ok = '1';
+			int status = pam_authenticate(handle, 0);
+			if (status == PAM_SUCCESS) {
+				/* The password was right. Whether this account may be used
+				 * here is a separate question, and the one this screen used
+				 * to skip entirely: an expired or disabled account unlocked
+				 * the screen. data/pam-tessera has always ended with
+				 * `@include common-account`, so the answer was one call
+				 * away. */
+				status = pam_acct_mgmt(handle, PAM_SILENT);
+				ok = status == PAM_SUCCESS ? AUTH_RIGHT : AUTH_ACCOUNT;
+			} else if (status == PAM_AUTH_ERR || status == PAM_PERM_DENIED ||
+					status == PAM_USER_UNKNOWN || status == PAM_MAXTRIES) {
+				ok = AUTH_WRONG;
 			}
-			pam_end(handle, PAM_SUCCESS);
+			/* The status says what happened, so the stack's own cleanup sees
+			 * it; it used to be told PAM_SUCCESS whatever the answer was. */
+			pam_end(handle, status);
 		}
 	}
 	explicit_bzero(password, sizeof(password));
 	if (write(STDOUT_FILENO, &ok, 1) != 1) {
 		return 1;
 	}
-	return ok == '1' ? 0 : 1;
+	return ok == AUTH_RIGHT ? 0 : 1;
 }
 
 /* After a few wrong passwords in a row, each new try has to wait a little
@@ -335,15 +361,26 @@ static int auth_done(int fd, uint32_t mask, void *data) {
 	char result = 0;
 	ssize_t n = read(fd, &result, 1);
 	auth_stop(server);
-	if (n == 1 && result == '1') {
+	if (n == 1 && result == AUTH_RIGHT) {
 		lock_release(server);
-	} else {
+	} else if (n == 1 && result == AUTH_WRONG) {
 		server->auth_failed = true;
 		server->auth_failures++;
 		server->auth_wait = wait_after_failures(server->auth_failures);
 		if (server->auth_wait > 0) {
 			wl_event_source_timer_update(server->auth_wait_timer, 1000);
 		}
+		lock_redraw(server, REDRAW_FIELD);
+	} else if (n == 1 && result == AUTH_ACCOUNT) {
+		/* Right password, unusable account. Nothing to count: the next try
+		 * would give the same answer. */
+		server->auth_refused = true;
+		lock_redraw(server, REDRAW_FIELD);
+	} else {
+		/* No byte at all: the helper died before it could answer, or it
+		 * could not check anything. Same as the timeout below - not a wrong
+		 * password, so nothing is counted and no wait is added. */
+		server->auth_error = true;
 		lock_redraw(server, REDRAW_FIELD);
 	}
 	return 0;
@@ -398,6 +435,7 @@ static void start_auth(struct ts_server *server) {
 	server->auth_busy = true;
 	server->auth_failed = false;
 	server->auth_error = false;
+	server->auth_refused = false;
 	server->auth_source = wl_event_loop_add_fd(server->loop, out[0],
 		WL_EVENT_READABLE | WL_EVENT_HANGUP, auth_done, server);
 	wl_event_source_timer_update(server->auth_timeout, AUTH_TIMEOUT_MS);
@@ -603,6 +641,7 @@ bool lock_handle_key(struct ts_server *server, xkb_keysym_t sym, uint32_t codepo
 			append_utf8(server, codepoint);
 			server->auth_failed = false;
 			server->auth_error = false;
+			server->auth_refused = false;
 		} else {
 			return true;
 		}

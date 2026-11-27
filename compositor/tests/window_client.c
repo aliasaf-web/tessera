@@ -252,7 +252,12 @@ static int pump(struct client *client, int ms) {
 	}
 	if (fds[1].revents) {
 		wl_display_cancel_read(client->display);
-		(void)write(STDOUT_FILENO, "stop\n", 5);
+		/* A failed write means the harness has let go of our stdout: there is
+		 * nobody left to tell, and stopping is right either way. Assigning it
+		 * is what -Wunused-result asks for; (void) does not satisfy it, and
+		 * FORTIFY is what makes the compiler ask. */
+		ssize_t told = write(STDOUT_FILENO, "stop\n", 5);
+		(void)told;
 		client->running = 0;
 		return 0;
 	}

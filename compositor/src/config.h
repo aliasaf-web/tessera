@@ -9,6 +9,12 @@
 
 #define TS_MAX_DISPLAYS 8
 
+/* The scales a screen can be asked for. Below the first is unreadably small
+ * and above the second is not a screen anyone is looking at; both are checked
+ * here so the global setting and a screen's own agree. 0 means "work it out". */
+#define TS_SCALE_MIN 0.5
+#define TS_SCALE_MAX 4.0
+
 /* Where a screen goes: next to the main screen, at a spot, or showing the
  * same picture as the main screen. */
 enum ts_display_place {

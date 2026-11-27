@@ -447,6 +447,7 @@ struct ts_server {
 	bool auth_busy;
 	bool auth_failed;
 	bool auth_error;         /* the check itself went wrong, not the password */
+	bool auth_refused;       /* the password was right; the account may not be used */
 	int auth_failures;       /* wrong passwords in a row */
 	int auth_wait;           /* seconds before the next try is allowed */
 	struct wl_event_source *auth_wait_timer;

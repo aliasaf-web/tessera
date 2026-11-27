@@ -4,7 +4,12 @@ project(
 	version: files('../VERSION'),
 	license: 'MIT',
 	meson_version: '>=0.60.0',
-	default_options: ['c_std=c11', 'warning_level=2', 'werror=false'],
+	# Optimised with debug information: this is the build the installer makes
+	# and the one CI checks, so the two agree. It matters for more than speed -
+	# -D_FORTIFY_SOURCE does nothing without optimisation, and a compositor
+	# built at -O0 is a compositor that drops frames it did not have to.
+	default_options: ['c_std=c11', 'warning_level=2', 'werror=false',
+		'buildtype=debugoptimized'],
 )
 
 add_project_arguments(
@@ -13,6 +18,22 @@ add_project_arguments(
 	'-Wno-missing-field-initializers',
 	language: 'c',
 )
+
+# What a compiler can harden without being asked twice. The stack protector and
+# the read-only, immediately-bound relocation tables cost nothing at run time
+# and turn a buffer overflow from "runs the attacker's code" into "the program
+# stops". FORTIFY only means anything with optimisation on - glibc says so with
+# a #warning, which -Dwerror=true would turn into a failed build - so it is
+# asked for only where it applies. A debug build (plain `meson setup` with
+# -Dbuildtype=debug) therefore goes without it, and still gets the rest.
+add_project_arguments(
+	['-fstack-protector-strong', '-Wformat', '-Wformat-security'],
+	language: 'c',
+)
+if get_option('optimization') != '0'
+	add_project_arguments('-D_FORTIFY_SOURCE=2', language: 'c')
+endif
+add_project_link_arguments('-Wl,-z,relro,-z,now', language: 'c')
 
 cc = meson.get_compiler('c')
 
@@ -136,7 +157,7 @@ executable(
 test('idle timing', executable('idle_test', 'tests/idle_test.c', build_by_default: false))
 test('reading settings', executable('config_test', 'tests/config_test.c', 'src/config_file.c',
 	dependencies: math, build_by_default: false),
-	args: [files('../tests/config-sample')])
+	args: [files('../tests/config-sample'), files('tests/config-limits-sample')])
 test('JSON text', executable('json_test', 'tests/json_test.c', 'src/json.c',
 	build_by_default: false))
 test('text buffers', executable('buf_test', 'tests/buf_test.c', build_by_default: false))

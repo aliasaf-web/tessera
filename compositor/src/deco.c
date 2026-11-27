@@ -455,6 +455,9 @@ static void draw_lock_field(cairo_t *cr, struct ts_server *server, double cx, do
 	} else if (server->auth_error) {
 		hint = "Something went wrong checking the password. Try again.";
 		hint_color = t->accent;
+	} else if (server->auth_refused) {
+		hint = "That password is right, but this account can't be used.";
+		hint_color = t->accent;
 	} else if (server->auth_wait > 0) {
 		snprintf(wait, sizeof(wait), "Too many wrong passwords. Try again in %d second%s.",
 			server->auth_wait, server->auth_wait == 1 ? "" : "s");
