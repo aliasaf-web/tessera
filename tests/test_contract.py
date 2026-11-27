@@ -274,6 +274,31 @@ class FindingTheDesktop(unittest.TestCase):
         self.assertIn('os.environ.get("TESSERA_SOCK")', source(SHELL_DIR / "ipc.py"))
 
 
+class DragIcons(unittest.TestCase):
+    """A drag icon's scene tree is wlroots' to destroy, and only its.
+
+    wlr_scene_drag_icon_create() adds its own listener to the icon's destroy
+    signal and takes the tree down there. A compositor that keeps the tree and
+    destroys it again frees a node that is already gone - which is what ended
+    the session whenever a file was dragged from one program to another, so the
+    rule is written down here as well as in the source.
+    """
+
+    def test_nothing_here_destroys_the_drag_icons_tree(self):
+        text = source(INPUT_C)
+        start = text.index("static void start_drag(")
+        body = text[start:text.index("\n}\n", start)]
+        self.assertIn("wlr_scene_drag_icon_create(", body,
+                      "the drag icon is no longer given a scene tree at all")
+        self.assertNotIn("wlr_scene_node_destroy", body,
+                         "the drag icon's tree is destroyed a second time")
+        # The whole file, because the destroy used to live in its own function
+        # beside this one rather than in the function that made the tree.
+        for line in text.splitlines():
+            if "wlr_scene_node_destroy" in line and "drag" in line.lower():
+                self.fail("a drag icon's tree is destroyed by hand: " + line.strip())
+
+
 class LockScreenLimits(unittest.TestCase):
     """The longest password the lock screen can send, said once."""
 
