@@ -855,8 +855,9 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
         a passing `assert x == 0` would have been a coincidence.
 
         So the test keeps the claim the code can be held to and the numbers that
-        show what is missing. When M11 is fixed, tighten it: `0 <= x`,
-        `y + height <= the screen`, and the same corner it was asked for.
+        show what is missing. It accepts today's answer *and* the fixed one - a
+        menu wholly inside the screen - and fails on a third behaviour, because a
+        test that froze `-120` in place would make the fix a red run.
         """
         process, _lines = self.window()
         self.ask("fullscreen")
@@ -876,13 +877,21 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
                          f"the menu was resized on the way to fitting: {placed}")
         self.assertLessEqual(int(menu_h), height,
                              "the lift was taller than the window the menu belongs to")
-        # What the desktop did was a shift by the menu's own size on both axes,
-        # which is worth saying out loud because it is the fingerprint of the bug
-        # rather than of the feature: a clamp that fit the menu to the screen
-        # would have moved it on one axis at most.
-        self.assertEqual((x + int(menu_w), y + int(menu_h)), (0, 780),
-                         f"the menu was not slid by its own size, so this test is "
-                         f"describing the wrong thing: {placed}")
+        # Two answers are accepted here, and only two: the one this desktop gives
+        # today, and the one it should give. `(x + w, y + h) == (0, asked)` is the
+        # fingerprint of M11 - a shift by the menu's own size on both axes, which
+        # is not something a clamp that knew the screen would do - and the second
+        # branch is the fix: a menu whose box lies inside the screen it belongs to.
+        # Anything else is a third thing nobody has explained, and fails.
+        menu_width, menu_height = int(menu_w), int(menu_h)
+        screen = self.ask("outputs")["outputs"][0]
+        asked_place = (x + menu_width, y + menu_height) == (0, height + 60)
+        fits = (0 <= x and x + menu_width <= screen["width"] and 0 <= y
+                and y + menu_height <= screen["height"])
+        self.assertTrue(asked_place or fits,
+                        f"the menu is neither M11's shift nor on the screen: {placed} on a "
+                        f"{screen['width']}x{screen['height']} screen\n"
+                        "if M11 is fixed, this test should be tightened to `fits` alone")
 
 
 class TheScreensFromOutside(TestWindow, DesktopMixin, unittest.TestCase):
