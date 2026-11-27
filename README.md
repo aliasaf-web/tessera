@@ -14,9 +14,6 @@ manager, bar, app launcher, quick settings, notifications and lock screen.
 - **A simple Settings app** for colours, background, screens (size,
   resolution, a second screen or projector), night light, touchpad, keyboard,
   sound, screen lock and default apps.
-- **The whole screen for one window.** Gaps separate windows from each other,
-  so a window on its own fills the screen and the gap comes back with a second
-  one. Set `gaps=N` in the config to have exactly N pixels either way.
 - **Light on your laptop.** Small screens get a compact layout automatically,
   and it only needs a small amount of memory.
 

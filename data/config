@@ -18,10 +18,7 @@ wallpaper=none
 
 # Bar and gaps: auto (compact on small screens), compact or comfortable.
 layout_size=auto
-# Space between windows in pixels; leave unset to follow layout_size. A gap
-# separates windows from each other, so a window on its own gets the whole
-# screen and the gap comes back with a second window. Set here, it means
-# exactly this many pixels.
+# Space between windows in pixels; leave unset to follow layout_size.
 # gaps=14
 animations=true
 
