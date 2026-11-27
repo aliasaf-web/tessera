@@ -315,19 +315,34 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 	uint32_t mods = wlr_keyboard_get_modifiers(keyboard->wlr_keyboard);
 
 	if (server->locked) {
-		/* Only a real keyboard can be used on the lock screen, so an app
-		 * can't type passwords into it. */
-		if (pressed && !keyboard->is_virtual) {
+		/* A virtual keyboard may type here on purpose. An on-screen keyboard
+		 * or a switch device has to be able to reach the password field, and
+		 * neither can invent a password you did not type - which is why the
+		 * lock screen lets the protocol connect at all (see filter_global in
+		 * main.c). Refusing its keys, as this did, left a machine without a
+		 * keyboard with a screen nothing could be typed into.
+		 *
+		 * What a virtual keyboard does *not* get is the rest of the branch:
+		 * switching virtual terminals and the media keys stay with a real
+		 * keyboard. A program in the session has no business moving the
+		 * person to another console, and it is not something a switch device
+		 * or an on-screen keyboard ever needs.
+		 *
+		 * A wrong password from one of these costs the same 2-to-60-second
+		 * wait as one from a person typing. */
+		if (pressed) {
 			bool done = false;
-			for (int i = 0; i < nsyms && !done; i++) {
-				if ((syms[i] >= XKB_KEY_XF86Switch_VT_1 && syms[i] <= XKB_KEY_XF86Switch_VT_12) ||
-						handle_media_key(server, syms[i])) {
-					if (syms[i] >= XKB_KEY_XF86Switch_VT_1 && syms[i] <= XKB_KEY_XF86Switch_VT_12 &&
-							server->session) {
-						wlr_session_change_vt(server->session,
-							syms[i] - XKB_KEY_XF86Switch_VT_1 + 1);
+			if (!keyboard->is_virtual) {
+				for (int i = 0; i < nsyms && !done; i++) {
+					if ((syms[i] >= XKB_KEY_XF86Switch_VT_1 && syms[i] <= XKB_KEY_XF86Switch_VT_12) ||
+							handle_media_key(server, syms[i])) {
+						if (syms[i] >= XKB_KEY_XF86Switch_VT_1 && syms[i] <= XKB_KEY_XF86Switch_VT_12 &&
+								server->session) {
+							wlr_session_change_vt(server->session,
+								syms[i] - XKB_KEY_XF86Switch_VT_1 + 1);
+						}
+						done = true;
 					}
-					done = true;
 				}
 			}
 			if (!done) {

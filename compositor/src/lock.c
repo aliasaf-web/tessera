@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <wlr/util/log.h>
+#include "proc.h"
 #include "server.h"
 
 /* The lock screen is drawn by the compositor itself, so nothing can show
@@ -247,6 +248,14 @@ static int pam_conversation(int num, const struct pam_message **msg,
  * and writes one of the bytes above to stdout. Running this as a separate
  * program keeps PAM out of the desktop's own process. */
 int lock_auth_helper_main(void) {
+	/* Only the desktop may ask: it runs the helper itself (start_auth), and
+	 * anything else running `tessera --auth-helper` would be a way to try
+	 * passwords in a loop at PAM's pace instead of the 2-to-60-second one. */
+	if (!proc_parent_is_self()) {
+		/* Nothing is read and nothing is written: there is no password to
+		 * check and no answer the caller has a right to. */
+		return 1;
+	}
 	char password[TS_PASSWORD_MAX];
 	size_t len = 0;
 	ssize_t n;

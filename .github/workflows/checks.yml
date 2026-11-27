@@ -4,16 +4,14 @@
 # failure can be read without the Actions log (see tools/ci-annotate.py).
 name: Checks
 
+# Every commit runs, including one that only touches prose. The shortcut that
+# used to skip `**.md` was wrong about one file: README.md is generated in part
+# (its shortcut tables come from shell/tessera_shell/shortcuts.py), and the test
+# that checks it is the one thing a prose-only commit can break. A minute of
+# runner time is cheaper than a README that disagrees with the desktop.
 on:
   push:
-    # A change to prose is not something a build can be wrong about, and the
-    # README is rewritten by tests rather than reviewed by one. Everything that
-    # a build *could* catch - including this file - still runs.
-    paths-ignore:
-      - "**.md"
   pull_request:
-    paths-ignore:
-      - "**.md"
 
 # A push while the previous run of the same branch is still going makes the
 # older one pointless: it is cancelled so the newest result comes sooner.

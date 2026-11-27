@@ -93,6 +93,7 @@ sources = files(
 	'src/main.c',
 	'src/nightlight.c',
 	'src/output.c',
+	'src/proc.c',
 	'src/switcher.c',
 	'src/view.c',
 	'src/wallpaper.c',
@@ -158,6 +159,8 @@ test('idle timing', executable('idle_test', 'tests/idle_test.c', build_by_defaul
 test('reading settings', executable('config_test', 'tests/config_test.c', 'src/config_file.c',
 	dependencies: math, build_by_default: false),
 	args: [files('../tests/config-sample'), files('tests/config-limits-sample')])
+test('who asked', executable('proc_test', 'tests/proc_test.c', 'src/proc.c',
+	build_by_default: false))
 test('JSON text', executable('json_test', 'tests/json_test.c', 'src/json.c',
 	build_by_default: false))
 test('text buffers', executable('buf_test', 'tests/buf_test.c', build_by_default: false))
