@@ -836,23 +836,24 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
         that is itself at the bottom of the screen is the everyday case of a
         context menu opening off-screen. The answer is a number either way, and a
         compositor that does not look at the screen edge sends back the number it
-        was given; this desktop has a place where it does look -
-        `popup_unconstrain()` - and what is asserted here is that it answered:
-        the menu came back *lifted*, above the top edge rather than parked below
-        the bottom one, and still the size its client chose.
+        was given. This desktop has a place where it does look -
+        `popup_unconstrain()` - and what is asserted here is that it answered at
+        all: the menu came back moved up and not resized, which is the difference
+        between a desktop with that code and one without it.
 
         What is not asserted is that the menu is where it should be, because it
-        is not, and the honest version of that is worth more here than a green
-        tick. Asked for at (0, 780) on a 1280x720 head, the desktop answers
-        `popup -120 680 120x100` in both CI build modes: the menu is off the left
-        edge by exactly its own width and past the bottom edge by 60, which is
-        this desktop's decoration margin. Both numbers say the same thing - the
-        rectangle it is being clamped into is not the screen - and AUDIT's M11
-        has the arithmetic, the two candidate fixes and the reason neither is in
-        this commit: nothing in the sandbox compiles the compositor, so a change
-        here could be checked only by the test that is supposed to be its
-        consequence, which is not a check. Pinning -120 would freeze the bug, and
-        a passing `assert x == 0` would have been a coincidence.
+        is not: asked for at (0, 780) on a 1280x720 head, the desktop answers
+        `popup -120 680 120x100` in both CI build modes - off the left edge by a
+        whole menu width and past the bottom edge by 60. The menu is being slid by
+        its own size on each axis, which is what a placement rule that picked the
+        wrong corner of the anchor rectangle looks like, and what a clamp into the
+        screen is not. The obvious theory - that the box handed to wlroots is
+        offset by the desktop's own decoration margin, subtracted twice - does not
+        survive the measured case, because a fullscreen window has no insets and
+        no CSD shadow, so the box `popup_unconstrain()` builds is the screen and
+        the answer is still wrong. AUDIT's M11 keeps the arithmetic, the three
+        places the discrepancy can be, and the one-minute repro, and says plainly
+        that closing it needs a machine with wlroots' headers.
 
         So the test keeps the claim the code can be held to and the numbers that
         show what is missing. It accepts today's answer *and* the fixed one - a
@@ -877,12 +878,12 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
                          f"the menu was resized on the way to fitting: {placed}")
         self.assertLessEqual(int(menu_h), height,
                              "the lift was taller than the window the menu belongs to")
-        # Two answers are accepted here, and only two: the one this desktop gives
-        # today, and the one it should give. `(x + w, y + h) == (0, asked)` is the
-        # fingerprint of M11 - a shift by the menu's own size on both axes, which
-        # is not something a clamp that knew the screen would do - and the second
-        # branch is the fix: a menu whose box lies inside the screen it belongs to.
-        # Anything else is a third thing nobody has explained, and fails.
+        # Two answers are accepted here and only two: the one this desktop gives
+        # today, and the one it should. The first is `(x + w, y + h) == (0, asked)`
+        # - the menu slid by its own size on both axes, M11's fingerprint; the
+        # second is a menu whose box lies inside the screen it was told about. A
+        # third behaviour is a change nobody has explained, and fails. Freezing
+        # the first alone would make fixing M11 a red run.
         menu_width, menu_height = int(menu_w), int(menu_h)
         screen = self.ask("outputs")["outputs"][0]
         asked_place = (x + menu_width, y + menu_height) == (0, height + 60)
