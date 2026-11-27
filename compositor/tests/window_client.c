@@ -267,15 +267,18 @@ static const struct xdg_popup_listener popup_listener = {
 static void open_popup(struct client *client) {
 	struct xdg_positioner *positioner = xdg_wm_base_create_positioner(client->wm_base);
 	xdg_positioner_set_size(positioner, POPUP_W, POPUP_H);
-	/* The whole window is the anchor rectangle and the menu hangs off its bottom
-	 * edge, 60 pixels below: which is the everyday shape of a context menu that
-	 * opens under a window at the bottom of the screen, and the desktop needs the
-	 * rectangle to be told at all - xdg-shell answers a positioner without one
-	 * with a protocol error rather than a menu. From here on, only a desktop that
-	 * looks at the screen edge has a reason to send the number back smaller. */
+	/* The whole window is the anchor rectangle; the menu's top-left corner goes
+	 * at the window's bottom-left, 60 pixels below it. That is the everyday shape
+	 * of a context menu under a window at the bottom of the screen, and the
+	 * desktop needs the rectangle to be named at all - xdg-shell answers a
+	 * positioner without one with a protocol error rather than a menu. A corner
+	 * rather than an edge, because an edge would ask to be centred: `bottom` with
+	 * `top` gravity means "middle of the bottom edge, above it", and the middle
+	 * is a thing the client did not ask for. From here on, only a desktop that
+	 * looks at the screen edge has a reason to change either number. */
 	xdg_positioner_set_anchor_rect(positioner, 0, 0, client->width, client->height);
-	xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_BOTTOM);
-	xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_TOP);
+	xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_BOTTOM_LEFT);
+	xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_TOP_LEFT);
 	xdg_positioner_set_offset(positioner, 0, POPUP_GAP);
 	/* A menu is a surface of its own, with its own xdg_surface - the popup is
 	 * what says whose it is. Unlike a window, it is sized by the client that
