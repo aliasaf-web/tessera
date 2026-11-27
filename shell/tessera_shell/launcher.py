@@ -6,6 +6,7 @@ import pwd
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from . import ipc, services
+from .apps import app_under, matches
 from .layer import (button, click_outside_closes, fullscreen_overlay, hbox, icon,
                     label, on_escape, set_monitor, vbox)
 
@@ -69,7 +70,10 @@ class Launcher:
         self.search.add_css_class("search")
         self.search.set_placeholder_text("Type to search apps")
         self.search.connect("search-changed", lambda *_: self.refilter())
-        self.search.connect("activate", lambda *_: self.launch_first())
+        # Enter arrives here even when an app has the focus, because the search
+        # entry captures every key in the window - that is how typing anywhere
+        # searches. So it is this that has to work out which app was asked for.
+        self.search.connect("activate", lambda *_: self.launch_chosen())
         self.search.set_key_capture_widget(self.window)
         self.card.append(self.search)
 
@@ -175,10 +179,7 @@ class Launcher:
         return " ".join(parts).lower()
 
     def _filter(self, child):
-        query = self.search.get_text().strip().lower()
-        if not query:
-            return True
-        return all(word in child.search_text for word in query.split())
+        return matches(child.search_text, self.search.get_text())
 
     def refilter(self):
         self.flow.invalidate_filter()
@@ -200,10 +201,26 @@ class Launcher:
                 return True
         return False
 
-    def launch_first(self):
-        first = self._first_visible()
-        if first is not None:
-            self.launch(first.app)
+    def launch_chosen(self):
+        """Enter opens what the highlight is on - the app whose button took the
+        focus from the arrow keys - and the first match only when the search box
+        is what has the focus, which is the case for someone who typed and
+        pressed Enter without looking away.
+
+        Any other focused button keeps the key it would have had: the footer's
+        Lock, Log out, Restart and Shut down are unreachable by keyboard
+        otherwise, because the search entry captures everything typed here."""
+        focused = self.window.get_focus()
+        app = app_under(focused)
+        if app is None:
+            if focused is not None and not self.search.has_focus():
+                if isinstance(focused, Gtk.Button):
+                    focused.activate()
+                return
+            first = self._first_visible()
+            app = first.app if first is not None else None
+        if app is not None:
+            self.launch(app)
 
     def launch(self, app):
         self.hide()
