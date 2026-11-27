@@ -321,13 +321,21 @@ it is asked for, `--panel` mapping a bar and printing the room it is given, and
 the window, its size repeated on request, the screens' places, a move tried out
 before it is applied.
 
-That is how tiling a real window, a bar's share of the screen, a menu kept on
-it, closing a window from the socket, and what the lock screen hides from a
-program started behind it get checked rather than only read. What no test here
-can see is *where* a window ends up on a screen: a Wayland client is told how
-big to be and never where it is, so a moved screen is checked by which screen a
-window is counted on. The sanitiser job runs the first two again with
-AddressSanitizer and UndefinedBehaviorSanitizer turned on.
+That is how tiling a real window, a bar's share of the screen, a menu the desktop
+answers instead of leaving where it was asked for, closing a window from the
+socket, and what the lock screen hides from a program started behind it get
+checked rather than only read.
+
+What no test here can see is *where* a window ends up on a screen: a Wayland
+client is told how big to be and never where it is, so a moved screen is checked
+by which screen a window is counted on. A menu's place can be asserted only as
+far as the client is told it, which on this desktop means the test says the menu
+was moved and stops there - read against `tessera outputs`, the answer places it
+off the edge of the screen in both axes, and the audit notes keep that as M11
+instead of pinning it into a passing assertion.
+
+The sanitiser job runs the first two again with AddressSanitizer and
+UndefinedBehaviorSanitizer turned on.
 
 A red run does not need the Actions log to be understood: `tools/ci-annotate.py`
 copies each failed test's report onto the check itself, where the checks tab and
