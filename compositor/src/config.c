@@ -104,7 +104,16 @@ bool output_is_compact(struct ts_output *output) {
 int output_gaps(struct ts_output *output) {
 	int gaps = output->server->config.gaps;
 	if (gaps >= 0) {
+		/* Asked for by name, so it means exactly that many pixels. */
 		return gaps;
+	}
+	/* Smart gaps: a gap keeps windows apart, and there is nothing to keep
+	 * apart when at most one window is tiled on this screen - one window on
+	 * its own, or one maximised window over the others. Those get the whole
+	 * work area, which is what someone who opens one app expects. A second
+	 * tiled window brings the gap back. */
+	if (layout_count_tiled(output) <= 1) {
+		return 0;
 	}
 	return output_is_compact(output) ? 8 : 14;
 }

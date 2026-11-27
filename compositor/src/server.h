@@ -551,6 +551,7 @@ void xwayland_init(struct ts_server *server);
 
 /* layout.c */
 void arrange_output(struct ts_output *output);
+int layout_count_tiled(struct ts_output *output);
 void arrange_all(struct ts_server *server);
 void workspace_switch(struct ts_server *server, int workspace);
 void workspace_switch_output(struct ts_output *output, int workspace);
