@@ -1292,6 +1292,12 @@ static void touch_motion(struct wl_listener *listener, void *data) {
 	double lx, ly;
 	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base,
 		event->x, event->y, &lx, &ly);
+	/* A file being dragged follows whatever started the drag, and a finger
+	 * does not move the pointer: without this the icon sits wherever the
+	 * mouse was left while the drop goes on under the finger. */
+	if (server->seat->drag != NULL) {
+		wlr_scene_node_set_position(&server->drag_icons->node, lx, ly);
+	}
 	wlr_seat_touch_notify_motion(server->seat, event->time_msec, event->touch_id,
 		lx - server->touch_points[i].ox, ly - server->touch_points[i].oy);
 }
@@ -1559,9 +1565,23 @@ static void request_start_drag(struct wl_listener *listener, void *data) {
 	struct wlr_seat_request_start_drag_event *event = data;
 	if (wlr_seat_validate_pointer_grab_serial(server->seat, event->origin, event->serial)) {
 		wlr_seat_start_pointer_drag(server->seat, event->drag, event->serial);
-	} else {
-		wlr_data_source_destroy(event->drag->source);
+		return;
 	}
+	/* A drag can start from a finger as well as from a pointer, and the serial
+	 * it carries is then the touch's. Only the pointer was asked, so every
+	 * touchscreen drag ended in the branch below: the data source was
+	 * destroyed and the program that offered the file was told the drag had
+	 * been cancelled. The rest of this desktop takes touch seriously - tap to
+	 * click, two-finger scrolling, the on-screen keyboard on the lock screen -
+	 * so this was a hole, not a decision. The point comes back with the answer
+	 * and is what the drag then follows. */
+	struct wlr_touch_point *point = NULL;
+	if (wlr_seat_validate_touch_grab_serial(server->seat, event->origin, event->serial,
+				&point) && point != NULL) {
+		wlr_seat_start_touch_drag(server->seat, event->drag, event->serial, point);
+		return;
+	}
+	wlr_data_source_destroy(event->drag->source);
 }
 
 /* The icon that follows the pointer while a file is dragged between two
