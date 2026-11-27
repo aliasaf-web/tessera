@@ -625,6 +625,31 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
         if not until(lambda: self.state()["occupied"] == []):
             self.fail(f"the desktop still has a window after closing it: {self.state()}")
 
+    def test_one_window_gets_the_whole_screen(self):
+        """A gap is space between things, so one thing does not need one.
+
+        The gap was spent whatever was on the screen, so a lone window paid 8
+        pixels of width and height to the desktop before it drew anything
+        ("smart gaps", `output_gaps()` in `config.c`). The work area is now the
+        window's own; the second window is what a gap is for, so it comes back
+        with one. Width is the honest measure here: the desktop takes its
+        titlebar off the answer it gives a client, and the bar's height is not
+        this test's to know.
+        """
+        self.wait_state(occupied=[])
+        width = self.ask("outputs")["outputs"][0]["logical_width"]
+        first, _lines = self.window()
+        alone = self.settled(first)
+        self.assertGreater(alone[0], width - 16,
+                           f"a gap was kept around the only window: {alone} on a "
+                           f"screen {width} wide")
+        second, _lines = self.window("--app-id", "second", "--title", "Second")
+        self.settled(second)
+        shared = self.settled(first)
+        self.assertLess(shared[0], alone[0],
+                        f"the gap did not come back with a second window: {shared} with company, "
+                        f"{alone} alone")
+
     def test_two_windows_share_the_screen(self):
         """The tiling maths in `layout.c`, seen from the side a client can check.
 
