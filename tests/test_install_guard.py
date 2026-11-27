@@ -24,7 +24,8 @@ END = "# Automatic login"
 
 # The variables the block reads and the three little functions it prints
 # through, which install.sh defines above it, and then the mode it left the
-# folder in, so a test can see a change rather than only hear about one.
+# folder and everything in it, so a test can see a change rather than only
+# hear about one.
 HARNESS_BEFORE = """#!/bin/sh
 set -eu
 MODE="${MODE:-install}"
@@ -39,6 +40,7 @@ fail() { printf '\\n\\033[31m%s\\033[0m\\n\\n' "$*"; exit 1; }
 """
 HARNESS_AFTER = """
 printf 'left with mode %s\\n' "$(stat -c %a "$SRC")"
+find "$SRC" -mindepth 1 -exec stat -c 'inside %a %n' {} +
 """
 
 
@@ -48,7 +50,7 @@ def trust_checks():
     start = text.index(START)
     end = text.index(END, start)
     block = text[start:end]
-    assert "chmod go-w" in block, "the trust checks no longer fix what they find"
+    assert "chmod -R go-w" in block, "the trust checks no longer fix what they find"
     assert "INSTALLED_VERSION" in block, "the trust checks lost the version notice"
     return block
 
@@ -114,6 +116,45 @@ class Trust(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("left with mode 755", out, out)
         self.assertNotIn("yours alone", out, out)
+
+    def test_one_open_file_inside_the_folder_is_closed_off(self):
+        """The installer copies files out of the tree and installs them with
+        root rights, so a single file another account can write is the same
+        hole as a folder that is open - and the folder itself can look
+        perfectly private while one file in it is not."""
+        inside = self.folder / "data"
+        inside.mkdir()
+        script = inside / "tessera-session"
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
+        script.chmod(0o666)
+        code, out = self.install(mode=0o755)
+        self.assertEqual(code, 0, out)
+        self.assertIn("yours alone now", out, out)
+        self.assertEqual(script.stat().st_mode & 0o777, 0o644, out)
+        self.assertEqual(inside.stat().st_mode & 0o777, 0o755, out)
+
+    def test_a_group_writable_file_inside_counts_too(self):
+        inside = self.folder / "shell"
+        inside.mkdir()
+        module = inside / "main.py"
+        module.write_text("", encoding="utf-8")
+        module.chmod(0o664)
+        code, out = self.install(mode=0o755)
+        self.assertEqual(code, 0, out)
+        self.assertIn("yours alone now", out, out)
+        self.assertEqual(module.stat().st_mode & 0o777, 0o644, out)
+
+    def test_a_symbolic_link_is_not_a_hole_of_its_own(self):
+        """A link always reports itself as world-writable; what matters is what
+        it points at, so a link in a private tree is left alone and says
+        nothing."""
+        inside = self.folder / "data"
+        inside.mkdir()
+        (inside / "link").symlink_to("/etc/hostname")
+        code, out = self.install(mode=0o755)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("yours alone", out, out)
+        self.assertTrue((inside / "link").is_symlink(), out)
 
     def test_the_notice_when_nothing_new_arrived(self):
         """The one way an update can look like it worked and change nothing."""

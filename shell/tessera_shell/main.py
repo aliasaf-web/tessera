@@ -222,8 +222,11 @@ class Shell:
 
     def screenshot(self, area=False):
         if not shutil.which("grim"):
+            # grim is one of the apps Tessera recommends rather than requires,
+            # so it can be missing: name the command that puts it back instead
+            # of pointing at an installer the person has already run.
             self.notifications.notify_internal("Screenshots need the “grim” program",
-                                               "It is installed by the Tessera installer.")
+                                               "Install it with:  sudo apt install grim")
             return
         self.launcher.hide()
         self.quick_settings.hide()
@@ -238,13 +241,19 @@ class Shell:
         def saved(ok, _out):
             if not ok:
                 return
-            if shutil.which("wl-copy"):
+            # wl-copy is a recommended app too, so say what happened rather
+            # than promising a copy that did not take place.
+            copied = shutil.which("wl-copy") is not None
+            if copied:
                 with open(path, "rb") as f:
                     subprocess.Popen(["wl-copy", "--type", "image/png"], stdin=f,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                body = "In Pictures › Screenshots, and copied so you can paste it."
+            else:
+                body = ("In Pictures › Screenshots. Install wl-clipboard to have each "
+                        "one copied as it is taken.")
             self.notifications.notify_internal(
-                "Screenshot saved", "In Pictures › Screenshots, and copied so you can paste it.",
-                path, ["open", "Open"],
+                "Screenshot saved", body, path, ["open", "Open"],
                 lambda key: Gio.AppInfo.launch_default_for_uri(
                     GLib.filename_to_uri(path, None), None))
 
@@ -266,7 +275,7 @@ class Shell:
                 return False
             if not shutil.which("slurp"):
                 self.notifications.notify_internal("Area screenshots need the “slurp” program",
-                                                   "It is installed by the Tessera installer.")
+                                                   "Install it with:  sudo apt install slurp")
                 return False
             try:
                 proc = Gio.Subprocess.new(["slurp"], Gio.SubprocessFlags.STDOUT_PIPE |
