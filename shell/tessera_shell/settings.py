@@ -22,6 +22,7 @@ from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
 from . import __version__, ipc, read_provenance, services  # noqa: E402
 from .terminal import terminal_command  # noqa: E402
+from .displays import Revert, same_choice  # noqa: E402
 from .theme import ACCENTS, read_config, write_config_value  # noqa: E402
 
 ACCENT_LABELS = {
@@ -181,6 +182,9 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.set_size_request(360, 360)
         self.loading = False
         self.reload_source = None
+        # The "Keep these display settings?" question, while it is up: which
+        # settings it covers and what each held before. None when none is up.
+        self.display_state = None
         self.cfg = read_config()
 
         self.toasts = Adw.ToastOverlay()
@@ -603,53 +607,80 @@ class SettingsWindow(Adw.ApplicationWindow):
 
     def change_display(self, key, value):
         """Screen changes are tried out: unless they are kept, they are undone
-        after 15 seconds, in case the screen can't show them."""
+        after 15 seconds, in case the screen can't show them.
+
+        A second change while that question is up joins the first rather than
+        opening a question of its own: two dialogs would each remember a
+        different "before", and the older one running out would quietly undo a
+        setting that had just been kept."""
         if self.loading:
             return
         field = key.rsplit(".", 1)[1]
-        previous = self.cfg.get(key) or ("true" if field == "enabled" else "auto")
+        stored = self.cfg.get(key) or ("true" if field == "enabled" else "auto")
         if field == "scale" and key not in self.cfg:
-            previous = self.cfg.get("scale", "auto") or "auto"
-        if value == previous:
+            stored = self.cfg.get("scale", "auto") or "auto"
+        if same_choice(field, stored, value):
+            # The setting already in use, picked again: a resolution keeps the
+            # refresh rate written beside it, and nothing is asked because
+            # nothing has changed.
             return
-        self.save(key, value)
 
-        state = {"left": 15, "done": False, "timer": None}
-        dialog = Adw.AlertDialog(heading="Keep these display settings?")
-
-        def body():
-            return (f"If you don't choose, the old settings come back in {state['left']} "
-                    f"second{'s' if state['left'] != 1 else ''}.")
-
-        def finish(keep):
-            if state["done"]:
-                return
-            state["done"] = True
+        state = self.display_state
+        if state is None:
+            state = self.display_state = {"left": 15, "timer": None, "revert": Revert()}
+            dialog = Adw.AlertDialog(heading="Keep these display settings?")
+            dialog.add_response("undo", "Undo")
+            dialog.add_response("keep", "Keep")
+            dialog.set_response_appearance("keep", Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_close_response("undo")
+            dialog.connect("response",
+                           lambda _d, response: self._display_answer(state, response == "keep"))
+            state["dialog"] = dialog
+            dialog.set_body(self._display_body(state))
+            dialog.present(self)
+        else:
+            # The newest change gets the full time, so the countdown measures
+            # how long it has been since anything was altered.
             if state["timer"] is not None:
                 GLib.source_remove(state["timer"])
                 state["timer"] = None
-            if not keep:
-                self.save(key, previous)
-                self.show_page("display")
+            state["left"] = 15
+            state["dialog"].set_body(self._display_body(state))
+        # What each setting held before the question opened, so Undo - or the
+        # countdown - puts back the whole batch rather than the last field.
+        state["revert"].remember(key, stored)
+        self.save(key, value)
+        state["timer"] = GLib.timeout_add_seconds(1, self._display_tick, state)
 
-        def tick():
-            state["left"] -= 1
-            if state["left"] > 0:
-                dialog.set_body(body())
-                return True
+    @staticmethod
+    def _display_body(state):
+        return (f"If you don't choose, the old settings come back in {state['left']} "
+                f"second{'s' if state['left'] != 1 else ''}.")
+
+    def _display_tick(self, state):
+        state["left"] -= 1
+        if state["left"] > 0:
+            state["dialog"].set_body(self._display_body(state))
+            return True
+        state["timer"] = None
+        self._display_answer(state, False)
+        state["dialog"].force_close()
+        return False
+
+    def _display_answer(self, state, keep):
+        """Kept, undone, or the countdown ran out: one answer covers every
+        screen setting changed since the question opened."""
+        if self.display_state is not state:
+            return  # already answered, or a newer batch has taken over
+        self.display_state = None
+        if state["timer"] is not None:
+            GLib.source_remove(state["timer"])
             state["timer"] = None
-            finish(False)
-            dialog.force_close()
-            return False
-
-        dialog.set_body(body())
-        dialog.add_response("undo", "Undo")
-        dialog.add_response("keep", "Keep")
-        dialog.set_response_appearance("keep", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_close_response("undo")
-        dialog.connect("response", lambda _d, response: finish(response == "keep"))
-        state["timer"] = GLib.timeout_add_seconds(1, tick)
-        dialog.present(self)
+        if keep:
+            return
+        for key, stored in state["revert"].items():
+            self.save(key, stored)
+        self.show_page("display")
 
     # -------------------------------------------------------------- Touchpad
 

@@ -62,13 +62,22 @@ fi
 # Everything put in place with root rights is read out of this folder, so no
 # one but you must be able to change what is in it: otherwise any program
 # running as another user could decide what ends up installed on the machine.
+# The whole tree, not only the top folder: one file inside it that someone else
+# can write is the same hole, because the installer copies files out of it and
+# the build reads them.
 SRC_OWNER="$(stat -c %U "$SRC")"
 if [ "$SRC_OWNER" != "$ME" ] && [ "$SRC_OWNER" != "root" ]; then
 	fail "The Tessera folder ($SRC) belongs to $SRC_OWNER, not to $ME.
 Take it back first, then run the installer again:
     sudo chown -R $ME $SRC"
 fi
-MODE_BAD="$(find "$SRC" -maxdepth 0 -perm /g+w,o+w -print 2>/dev/null || true)"
+# Files and folders only: a symbolic link has no mode of its own worth testing,
+# and it is what it points at that gets installed.
+open_to_others() {
+	find "$SRC" \( -type f -o -type d \) \
+		\( -perm /g+w,o+w -o \( ! -user "$ME" ! -user root \) \) -print 2>/dev/null || true
+}
+MODE_BAD="$(open_to_others)"
 if [ -n "$MODE_BAD" ]; then
 	# Someone other than you can change what gets installed with root rights.
 	# Taking the write bit off is the whole remedy, and this folder is ours to
@@ -76,16 +85,19 @@ if [ -n "$MODE_BAD" ]; then
 	# update that stops here leaves a person with the version they already had
 	# and nothing saying why, which is worse than a quiet fix.
 	if [ "$SRC_OWNER" = "$ME" ]; then
-		chmod go-w "$SRC" 2>/dev/null || true
+		chmod -R go-w "$SRC" 2>/dev/null || true
 	else
-		sudo chmod go-w "$SRC" 2>/dev/null || true
+		sudo chmod -R go-w "$SRC" 2>/dev/null || true
 	fi
-	if [ -n "$(find "$SRC" -maxdepth 0 -perm /g+w,o+w -print 2>/dev/null)" ]; then
-		fail "Other people can change the Tessera folder ($SRC), and Tessera
-installs from it with root rights, so they could decide what ends up on your
-machine. This could not be closed off from here. Make the folder yours alone
-and run this again:
-    chmod go-w $SRC"
+	MODE_BAD="$(open_to_others)"
+	if [ -n "$MODE_BAD" ]; then
+		fail "Other people can change these files in the Tessera folder ($SRC):
+$(printf '%s\n' "$MODE_BAD" | sed -n '1,5s/^/    /p')
+Tessera installs from that folder with root rights, so they could decide what
+ends up on your machine. This could not be closed off from here. Make the
+folder yours alone and run this again:
+    sudo chown -R $ME $SRC
+    chmod -R go-w $SRC"
 	fi
 	warn "  The Tessera folder was open to other people's changes; it is yours alone now."
 fi
