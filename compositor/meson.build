@@ -95,40 +95,54 @@ executable(
 # locked, closing a window from the socket - can be read but not checked. Built
 # beside the window manager, and installed nowhere.
 wayland_client = dependency('wayland-client')
-xdg_shell_xml = protocols_dir / 'stable/xdg-shell/xdg-shell.xml'
 
-xdg_shell_client_header = custom_target(
-	'xdg-shell client header',
-	input: xdg_shell_xml,
-	output: 'xdg-shell-client-protocol.h',
-	command: [scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
-)
+# The same XML files, from the client's side: the header it includes and the code
+# it links against come from the protocol the compositor itself implements. All
+# three of the interfaces the test client speaks are here, so that a test can
+# bind a layer surface or a screen with the same names the compositor answers.
+client_protocols = [
+	protocols_dir / 'stable/xdg-shell/xdg-shell.xml',
+	'protocols/wlr-layer-shell-unstable-v1.xml',
+	'protocols/wlr-output-management-unstable-v1.xml',
+]
 
-# The scanner's own output is written to be compiled, not to be warned about, and
-# it is nobody's business to fix it here. It goes in a library of its own with
-# warnings not fatal, because `-Dwerror=true` would otherwise make a red build of
-# a file no one wrote - the way it did the first time this target was built. The
-# client above keeps the strict build, since that file is ours.
-xdg_shell_client_code = static_library(
-	'xdg-shell client code',
-	[
-		custom_target(
-			'xdg-shell client protocol code',
-			input: xdg_shell_xml,
-			output: 'xdg-shell-protocol.c',
-			command: [scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
-		),
-		xdg_shell_client_header,
-	],
-	dependencies: [wayland_client],
-	override_options: ['werror=false'],
-)
+client_headers = []
+client_code = []
+foreach xml : client_protocols
+	client_header = custom_target(
+		xml.underscorify() + '_client_h',
+		input: xml,
+		output: '@BASENAME@-client-protocol.h',
+		command: [scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+	)
+	client_headers += client_header
+
+	# The scanner's own output is written to be compiled, not to be warned about,
+	# and it is nobody's business to fix it here. It goes in a library of its own
+	# with warnings not fatal, because `-Dwerror=true` would otherwise make a red
+	# build of a file no one wrote - the way it did the first time this target
+	# was built. The client keeps the strict build, since that file is ours.
+	client_code += static_library(
+		xml.underscorify() + '_client_code',
+		[
+			custom_target(
+				xml.underscorify() + '_client_c',
+				input: xml,
+				output: '@BASENAME@-protocol.c',
+				command: [scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+			),
+			client_header,
+		],
+		dependencies: [wayland_client],
+		override_options: ['werror=false'],
+	)
+endforeach
 
 executable(
 	'tessera-test-window',
-	['tests/window_client.c', xdg_shell_client_header],
+	['tests/window_client.c'] + client_headers,
 	dependencies: [wayland_client],
-	link_with: xdg_shell_client_code,
+	link_with: client_code,
 	build_by_default: true,
 	install: false,
 )

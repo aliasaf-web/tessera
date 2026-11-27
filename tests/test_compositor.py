@@ -441,13 +441,19 @@ class TestWindow:
     is closed from the control socket really goes away. The client prints one
     line per event and flushes it, so a test reads lines rather than guessing.
 
+    The class also starts it as a bar (`panel`) and as the thing that holds the
+    screen tools (`driver`), because a panel's share of the screen and a screen
+    the client asked to be moved are both only visible from inside the session;
+    and it writes commands to the client where a test needs the client to answer
+    a question rather than wait for news (`asked_size`, `places`).
+
     Two details of the harness cost a red run each to learn, and are worth the
-    paragraph. Its stdin stays a pipe this side owns: the client reads a word
-    there as "finish now", and an inherited stdin that is already at the end -
-    which is what a run under Actions has - reads as that word at once. And its
-    output is read by a thread, not by whoever wants to look: a client nobody is
-    draining stops inside a write, and a window stuck there holds up the desktop
-    that is waiting for its answer.
+    paragraph. Its stdin stays a pipe this side owns: that is where the commands
+    come from, and an inherited stdin that is already at the end - which is what
+    a run under Actions has - reads as "finish now" at once. And its output is
+    read by a thread, not by whoever wants to look: a client nobody is draining
+    stops inside a write, and a window stuck there holds up the desktop that is
+    waiting for its answer.
     """
 
     @classmethod
@@ -463,19 +469,56 @@ class TestWindow:
         name = os.path.basename(self.env["TESSERA_SOCK"])
         return name.removesuffix(".sock").removeprefix("tessera-")
 
-    def window(self, *extra, wait_for="mapped"):
-        """Starts the client and waits until it says it has a window."""
+    def start(self, *args, wait_for):
+        """The client, with any arguments, and its first wanted line waited for.
+
+        Every mode is started the same way, because every one of them is read the
+        same way: lines out, orders in. `wait_for` is the prefix of the line that
+        says the thing the mode is for has happened - a window mapped, a panel
+        sized, the screens listed.
+        """
         env = dict(self.env, WAYLAND_DISPLAY=self.display())
         process = subprocess.Popen(
-            [CLIENT, "--window", "--idle-ms", "60000", *extra],
+            [CLIENT, *args, "--idle-ms", "60000"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, env=env)
         process.seen = []
         threading.Thread(target=self._listen, args=(process,), daemon=True).start()
         self.processes.append(process)
         if not until(lambda: any(line.startswith(wait_for) for line in process.seen), 40):
-            self.fail(f"the test window never said {wait_for!r}; it said {process.seen}")
+            self.fail(f"the client never said {wait_for!r}; it said {process.seen}")
         return process, list(process.seen)
+
+    def window(self, *extra, wait_for="mapped"):
+        """Starts the client and waits until it says it has a window."""
+        return self.start("--window", *extra, wait_for=wait_for)
+
+    def panel(self, *extra, wait_for="panel "):
+        """The client as a bar: one layer surface, sized by the desktop."""
+        return self.start("--panel", *extra, wait_for=wait_for)
+
+    def driver(self, *extra, wait_for="outputs ready"):
+        """The client holding the screen tools, waiting for orders.
+
+        Deliberately no window of its own: a test that watches what a screen
+        change does to a window has to know how many windows there are, and a
+        driver that mapped one of its own would silently turn a one-window layout
+        into a two-window one. The sizes asserted below depend on that.
+
+        It is also the only mode not allowed to run out of patience on its own: a
+        test that means to watch a screen change needs the client to still be
+        there when the change arrives, and to have bound the output manager while
+        the desktop was unlocked - which is how a test asks for the change the
+        lock is supposed to refuse.
+        """
+        return self.start("--drive-outputs", *extra, wait_for=wait_for)
+
+    def order(self, process, line):
+        """One command to the client, and the flush that makes it be read now."""
+        if process.poll() is not None:
+            self.fail(f"the client had already gone ({process.seen})")
+        process.stdin.write(line + "\n")
+        process.stdin.flush()
 
     @staticmethod
     def _listen(process):
@@ -517,6 +560,62 @@ class TestWindow:
             time.sleep(0.4)
         return last
 
+    def resized(self, process, size, seconds=30):
+        """Waits until the size the desktop is last asking for is `size`.
+
+        A change is waited for rather than read, because the desktop arranges a
+        window when it gets round to it, which on a loaded runner is not the
+        moment after the thing that caused it.
+        """
+        def last():
+            sizes = self.configure_sizes(process.seen)
+            return bool(sizes) and sizes[-1] == size
+
+        if not until(last, seconds):
+            self.fail(f"the window was never made {size}; the client says "
+                      f"{self.configure_sizes(process.seen)}")
+
+    def asked_size(self, process):
+        """What the desktop last asked this window to be, asked out loud.
+
+        Going through the client is the difference between "nothing has arrived
+        since I looked" and "nothing changed", and only the second of those is
+        worth asserting. A panel that takes no room, a move that is not a resize:
+        both are claims about a line that does not come, so both need this.
+        """
+        before = len([line for line in process.seen if line.startswith("size ")])
+        self.order(process, "size")
+        line = self.expect(process, "size ", count=before + 1)[-1]
+        width, _, height = line.split()[1].partition("x")
+        return int(width), int(height)
+
+    def told(self, process, name, place, seconds=30):
+        """Waits until the client has heard that `name` is at `place`.
+
+        A screen's new place reaches a client by event rather than by answer, and
+        a moment after a request is accepted is not necessarily a moment after
+        anybody was told - so this waits for the line instead of reading a list
+        and hoping it is up to date.
+        """
+        want = f"head {name} at {place[0]},{place[1]}"
+
+        def seen():
+            return want in process.seen
+
+        if not until(seen, seconds):
+            self.fail(f"the client was never told {name} is at {place}; it said {process.seen}")
+
+    def layout(self):
+        """Where the screens are, as {name: (x, y, width, height)}.
+
+        This is the `outputs` answer the bar reads, so a test can hold the desktop
+        to its own account of the layout rather than to what a client was told -
+        and a desktop that reports a screen in two places at once is a bug in the
+        desktop, not in the client that noticed.
+        """
+        return {entry["name"]: (entry["x"], entry["y"], entry["width"], entry["height"])
+                for entry in self.ask("outputs")["outputs"]}
+
     def stop(self, process):
         """Ends a client and waits, so a test that looks at the desktop
         afterwards is not competing with a window that is still closing."""
@@ -527,6 +626,24 @@ class TestWindow:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=20)
+
+    def quit(self, process, timeout=30):
+        """Ends a client by telling it, and waits - the way a program leaves.
+
+        Worth having next to `stop`: killing a client and letting it exit are two
+        different paths through the compositor, since a signal finds the desktop
+        mid-write while an exit closes the connection cleanly, and a test that
+        then asserts something about a *different* window should not be measuring
+        the difference. The signal is still the backstop.
+        """
+        if process.poll() is None:
+            self.order(process, "stop")
+            try:
+                process.wait(timeout=timeout)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+        self.stop(process)
 
     def teardown_windows(self):
         for process in getattr(self, "processes", []):
@@ -671,6 +788,246 @@ class AWindowInTheDesktop(TestWindow, DesktopMixin, unittest.TestCase):
                          f"leaving fullscreen did not restore the size: was {before}, "
                          f"the client says {self.configure_sizes(process.seen)}")
 
+    def test_a_bar_takes_its_share_of_the_screen_and_gives_it_back(self):
+        """A panel's exclusive zone is how a bar gets room no window is drawn in.
+
+        Both halves are asserted because both go wrong separately: the size the
+        desktop hands the bar, and the size a window is asked for afterwards, and
+        the same size again once the bar is gone. None of it is in the state line,
+        which says nothing about panels at all.
+
+        The bar asks for a 40-pixel strip and reserves 40, which is what a real
+        one does - so this cannot tell "it took the zone" from "it took its own
+        height", and does not pretend to. What it does catch is the zone being
+        ignored (the window would keep its size), applied to the wrong edge, or
+        never handed back; and the bar at the end that reserves nothing says that
+        it is the reservation that moves the window, not the mere fact of a strip
+        of pixels along the top of the screen.
+        """
+        process, _lines = self.window()
+        alone = self.settled(process)
+        bar, bar_lines = self.panel("--zone", "40")
+
+        granted = self.expect(bar, "panel ")[0].split()[1]
+        width, _, height = granted.partition("x")
+        self.assertEqual(int(height), 40,
+                         f"the bar was not given the strip it asked for: {bar_lines}")
+        self.assertGreaterEqual(int(width), alone[0],
+                                f"a bar anchored to both sides should span the screen: {granted}")
+        self.resized(process, (alone[0], alone[1] - 40))
+
+        self.quit(bar)   # the way a bar really goes away: it decides to
+        self.resized(process, alone, seconds=60)
+
+        # A bar that reserves nothing is a picture over the wallpaper: the window
+        # keeps the size it had. That is the other half of the rule, and the only
+        # way to check it is to ask the client what it is now, since waiting for a
+        # line that never comes is not a test.
+        overlay, _lines = self.panel()
+        self.expect(overlay, "panel ")
+        self.assertEqual(self.asked_size(process), alone,
+                         f"a panel with no exclusive zone took room from a window\n"
+                         f"{self.output()}")
+
+    def test_a_menu_asked_below_the_bottom_edge_is_kept_on_the_screen(self):
+        """A menu's place is the client's to ask for and the desktop's to allow.
+
+        A menu asked for sixty pixels below the bottom-left corner of a window
+        that is itself at the bottom of the screen is the everyday case of a
+        context menu opening off-screen. The answer is a number either way, and a
+        compositor that does not look at the screen edge sends back the number it
+        was given. This desktop has a place where it does look -
+        `popup_unconstrain()` - and what is asserted here is that it answered at
+        all: the menu came back moved up and not resized, which is the difference
+        between a desktop with that code and one without it.
+
+        What is not asserted is that the menu is where it should be, because it
+        is not: asked for at (0, 780) on a 1280x720 head, the desktop answers
+        `popup -120 680 120x100` in both CI build modes - off the left edge by a
+        whole menu width and past the bottom edge by 60. The menu is being slid by
+        its own size on each axis, which is what a placement rule that picked the
+        wrong corner of the anchor rectangle looks like, and what a clamp into the
+        screen is not. The obvious theory - that the box handed to wlroots is
+        offset by the desktop's own decoration margin, subtracted twice - does not
+        survive the measured case, because a fullscreen window has no insets and
+        no CSD shadow, so the box `popup_unconstrain()` builds is the screen and
+        the answer is still wrong. AUDIT's M11 keeps the arithmetic, the three
+        places the discrepancy can be, and the one-minute repro, and says plainly
+        that closing it needs a machine with wlroots' headers.
+
+        So the test keeps the claim the code can be held to and the numbers that
+        show what is missing. It accepts today's answer *and* the fixed one - a
+        menu wholly inside the screen - and fails on a third behaviour, because a
+        test that froze `-120` in place would make the fix a red run.
+        """
+        process, _lines = self.window()
+        self.ask("fullscreen")
+        height = self.settled(process)[1]
+        self.order(process, "popup")
+
+        # 60 is the gap the client puts in its positioner and the window's height
+        # is its anchor rectangle, so the number it asked to be placed at is this.
+        placed = self.expect(process, "popup ")[0]
+        parts = placed.split()
+        x, y = int(parts[1]), int(parts[2])
+        menu_w, _, menu_h = parts[3].partition("x")
+        self.assertLess(y, height + 60,
+                        f"the menu was put exactly where it asked, off the bottom: {placed}")
+        self.assertGreater(y, 0, f"the menu was shoved off the top instead: {placed}")
+        self.assertEqual((int(menu_w), int(menu_h)), (120, 100),
+                         f"the menu was resized on the way to fitting: {placed}")
+        self.assertLessEqual(int(menu_h), height,
+                             "the lift was taller than the window the menu belongs to")
+        # Two answers are accepted here and only two: the one this desktop gives
+        # today, and the one it should. The first is `(x + w, y + h) == (0, asked)`
+        # - the menu slid by its own size on both axes, M11's fingerprint; the
+        # second is a menu whose box lies inside the screen it was told about. A
+        # third behaviour is a change nobody has explained, and fails. Freezing
+        # the first alone would make fixing M11 a red run.
+        menu_width, menu_height = int(menu_w), int(menu_h)
+        screen = self.ask("outputs")["outputs"][0]
+        asked_place = (x + menu_width, y + menu_height) == (0, height + 60)
+        fits = (0 <= x and x + menu_width <= screen["width"] and 0 <= y
+                and y + menu_height <= screen["height"])
+        self.assertTrue(asked_place or fits,
+                        f"the menu is neither M11's shift nor on the screen: {placed} on a "
+                        f"{screen['width']}x{screen['height']} screen\n"
+                        "if M11 is fixed, this test should be tightened to `fits` alone")
+
+
+class TheScreensFromOutside(TestWindow, DesktopMixin, unittest.TestCase):
+    """What a program that is not the settings window can do to the screens.
+
+    The screens had only ever been rearranged from inside: the display settings
+    write a file and the desktop reads the whole of it, which is why `tessera
+    outputs` has carried each screen's `x` and `y` all along - and why no test
+    looked at them. The way any other program does it is `zwlr_output_manager_v1`:
+    ask whether a change would be taken, then apply it. That path had been read
+    but never answered, and three things are only visible from the end of it -
+    whether a change that was only tried out tried out quietly, whether a client
+    that named no position left two screens apart rather than piling them in the
+    corner, and whether a screen that changes size takes its windows with it.
+
+    Two screens, because one can show none of that, and a window to watch with,
+    because a screen that changes size is only interesting if something was on it.
+    Where a window ends up *on* the screen is not checkable: a Wayland client is
+    told how big to be and never where it is, so the last assertion in each test
+    is about which screen a window belongs to, which is the nearest thing to a
+    position that either side of the session can see.
+    """
+
+    screens = "2"
+
+    def setUp(self):
+        self.processes = []
+        self.addCleanup(self.teardown_windows)
+
+    def only_host(self):
+        """The one screen with a window on it; more than one is a failure."""
+        hosts = self.hosts()
+        self.assertEqual(len(hosts), 1,
+                         f"the window is on more than one screen: {self.state()}")
+        return hosts[0]
+
+    def hosts(self):
+        """The screens with a window on them, by name.
+
+        The nearest thing to a position that either side of the session reports:
+        a client is never told where it is, so which screen a window ends up
+        counted on is what a test here can see of a screen being moved.
+        """
+        return [entry["name"] for entry in self.state()["outputs"] if entry["occupied"]]
+
+    def test_a_screen_the_client_moved_takes_its_windows_with_it(self):
+        """Moving one screen is the request wlr-randr and a laptop dock make, and
+        the promise is that nothing else moves and nothing is resized.
+
+        So: the screen moved where it was asked, the screen nobody mentioned did
+        not move at all, the client was told about it, and the window is still
+        counted on the screen it was on rather than having been dropped.
+        """
+        driver, _lines = self.driver()
+        process, _lines = self.window("--app-id", "passenger")
+        before = self.layout()
+        # Which screen to move is taken from where the window is rather than from
+        # the order names come back in: the point of the test is that the screen
+        # carrying a window is the one that has to behave.
+        moved = self.only_host()
+        still = [name for name in before if name != moved][0]
+        size = self.settled(process)
+
+        self.order(driver, f"apply {moved} 400 100")
+        self.expect(driver, "apply ok")
+
+        after = self.layout()
+        self.assertEqual(after[moved][:2], (400, 100),
+                         "the move the client asked for did not happen")
+        self.assertEqual(after[still], before[still], "a screen nobody mentioned moved")
+        self.told(driver, moved, (400, 100))
+        self.assertEqual(self.asked_size(process), size,
+                         "a move was answered by resizing the window")
+        self.assertEqual(self.hosts(), [moved],
+                         f"the window was left behind by the screen it was on: {self.state()}")
+
+    def test_a_tried_out_change_changes_nothing(self):
+        """`test` means "would you take this", and the answer is only worth having
+        if nothing moved.
+
+        The two requests go through the same code and part company at one flag,
+        which is the kind of thing that rots into `test` being a wasted round
+        trip. So the pair is asserted together: the same numbers, tried out with
+        no change to the layout, then applied and seen to take effect.
+        """
+        driver, _lines = self.driver()
+        before = self.layout()
+        name = sorted(before)[0]
+
+        self.order(driver, f"test {name} 700 200")
+        self.expect(driver, "test ok")
+        self.assertEqual(self.layout(), before,
+                         "a change that was only tried out took effect anyway")
+
+        self.order(driver, f"apply {name} 700 200")
+        self.expect(driver, "apply ok")
+        self.assertEqual(self.layout()[name][:2], (700, 200),
+                         "the same request, applied, did not apply")
+
+    def test_a_size_change_does_not_pile_the_screens_in_a_corner(self):
+        """A client that changes modes and says nothing about positions leaves the
+        protocol to fill in 0,0 for every screen.
+
+        Taking that literally moves all of them on top of each other in the
+        top-left corner, which is what this desktop used to do; the answer is to
+        guess that a corner nobody mentioned was not meant. A guess is worth one
+        test, and this is it: the screens take the new size, keep their places,
+        and stay apart - and the window on one of them is resized by exactly the
+        amount that screen shrank, rather than left painting into what is now
+        somebody else's half of the screen.
+        """
+        driver, _lines = self.driver()
+        process, _lines = self.window()
+        before = self.layout()
+        names = sorted(before)
+        # Both screens are the size the headless backend was told to make, and
+        # that is worth saying out loud: everything below works out which screen
+        # the window is on rather than assuming it is the first of them.
+        self.assertEqual({before[entry][2] for entry in names}, {before[names[0]][2]},
+                         f"two screens of different sizes: {before}")
+        size = self.settled(process)
+        screen = self.only_host()
+        narrower = before[screen][2] - 1024
+
+        self.order(driver, "allmodes 1024 720")
+        self.expect(driver, "allmodes ok")
+        after = self.layout()
+        for name in names:
+            self.assertEqual(after[name][2], 1024, f"{name} did not take the new size: {after}")
+            self.assertEqual(after[name][:2], before[name][:2], f"{name} moved when nobody asked")
+        self.assertNotEqual(after[names[0]][:2], after[names[1]][:2],
+                            "both screens ended up in the same place")
+        self.assertEqual(self.asked_size(process), (size[0] - narrower, size[1]),
+                         "the window did not follow the screen it is on")
+
 
 class WhatTheLockTakesAway(TestWindow, DesktopMixin, unittest.TestCase):
     """What a program can see of a locked desktop, and what it keeps.
@@ -706,6 +1063,15 @@ class WhatTheLockTakesAway(TestWindow, DesktopMixin, unittest.TestCase):
             self.assertIn(name, before, f"the desktop never offered {name} at all")
 
         process, _lines = self.window()
+        # A client that is already holding the screen tools, so that the lock can
+        # be asked about them as it really happens: not as a program that starts
+        # now and never hears of the interface, but as one that had it.
+        driver, _lines = self.driver()
+        screens = self.layout()
+        # Not `name`: the loops above and below use that variable for the
+        # interfaces they are looking for, and a name reused out of a loop is a
+        # test that quietly asks for the wrong thing.
+        screen_name = sorted(screens)[0]
         self.ask("lock")
         self.wait_state(locked=True)
 
@@ -733,6 +1099,18 @@ class WhatTheLockTakesAway(TestWindow, DesktopMixin, unittest.TestCase):
         refused = self.ask("close", expect_ok=False)
         self.assertIn("locked", refused.get("error", ""),
                       "a window behind the lock could be closed from the socket")
+
+        # And a request about the screens from that client is refused outright,
+        # not queued up for the moment the screen opens again. The lock works by
+        # hiding the tools, so this is the one place where "refused" has to be
+        # said out loud: a layout that moves under a locked screen hides the lock
+        # from you rather than protecting you, which is why the answer is an
+        # event and not a silent yes.
+        self.assertEqual(self.layout(), screens, "the screens moved before the lock")
+        self.order(driver, f"apply {screen_name} 300 0")
+        self.expect(driver, "apply failed")
+        self.assertEqual(self.layout(), screens,
+                         "a locked desktop let a client move a screen anyway")
 
 
 if __name__ == "__main__":
