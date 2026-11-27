@@ -24,7 +24,7 @@ static struct wlr_box tile_area(struct ts_output *output) {
 	return area;
 }
 
-int layout_count_tiled(struct ts_output *output) {
+static int count_tiled(struct ts_output *output) {
 	int n = 0;
 	struct ts_view *view;
 	wl_list_for_each(view, &output->server->views, link) {
@@ -40,7 +40,7 @@ void arrange_output(struct ts_output *output) {
 	int g = output_gaps(output);
 	double ratio = output->master_ratio[output->workspace];
 	struct wlr_box area = tile_area(output);
-	int n = layout_count_tiled(output);
+	int n = count_tiled(output);
 	int i = 0;
 
 	struct ts_view *view;
@@ -301,7 +301,7 @@ void view_swap(struct ts_view *a, struct ts_view *b) {
 }
 
 bool layout_gap_hit(struct ts_output *output, double lx, double ly) {
-	if (output == NULL || layout_count_tiled(output) < 2) {
+	if (output == NULL || count_tiled(output) < 2) {
 		return false;
 	}
 	struct ts_view *view;
