@@ -427,6 +427,11 @@ struct ts_server {
 		bool active;
 		struct ts_output *output;
 		int from, to, dir;
+		/* Where the slide has got to, and the screen it crosses: a client
+		 * can commit in the middle of it, and `view_update_frame()` has to
+		 * put the window where the slide has it, not where it will end up. */
+		double eased;
+		int width;
 		uint32_t start_ms;
 		struct wl_event_source *timer;
 	} ws_anim;
@@ -552,6 +557,7 @@ void xwayland_init(struct ts_server *server);
 /* layout.c */
 void arrange_output(struct ts_output *output);
 int layout_count_tiled(struct ts_output *output);
+int layout_slide_offset(struct ts_view *view);
 void arrange_all(struct ts_server *server);
 void workspace_switch(struct ts_server *server, int workspace);
 void workspace_switch_output(struct ts_output *output, int workspace);
