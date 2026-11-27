@@ -109,6 +109,11 @@ static void um_set_override_redirect(struct wl_listener *listener, void *data) {
 	}
 	um_destroy(&um->destroy, NULL);
 	struct ts_view *view = create_view(server, xs);
+	if (view == NULL) {
+		/* view_create_common() has said what ran out; there is no window to
+		 * associate, so this surface stays an unmanaged one nobody draws. */
+		return;
+	}
 	if (associated) {
 		xv_associate(&view->associate, NULL);
 		if (mapped) {

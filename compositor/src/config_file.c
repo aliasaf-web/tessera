@@ -88,6 +88,17 @@ static struct ts_display_config *display_entry(struct ts_config *c, const char *
  * display.PORT.position = auto | right | left | above | below | mirror | X,Y
  * right, left, above and below are next to the main screen (the built-in
  * one if it is in use). */
+/* A scale, from "auto", a number, or something nobody meant. Out of range
+ * falls back to 0 (work it out) rather than being clamped to an edge: a value
+ * outside it is not a smaller or larger scale, it is a mistake. */
+static double parse_scale(const char *val) {
+	if (strcmp(val, "auto") == 0) {
+		return 0;
+	}
+	double scale = atof(val);
+	return scale >= TS_SCALE_MIN && scale <= TS_SCALE_MAX ? scale : 0;
+}
+
 static void parse_display(struct ts_config *c, const char *key, const char *val) {
 	const char *port = key + strlen("display.");
 	const char *dot = strrchr(port, '.');
@@ -114,8 +125,7 @@ static void parse_display(struct ts_config *c, const char *key, const char *val)
 			d->refresh = hz > 0 ? (int)(hz * 1000 + 0.5) : 0;
 		}
 	} else if (strcmp(field, "scale") == 0) {
-		double scale = strcmp(val, "auto") == 0 ? 0 : atof(val);
-		d->scale = scale >= 0.5 && scale <= 4 ? scale : 0;
+		d->scale = parse_scale(val);
 	} else if (strcmp(field, "position") == 0) {
 		static const struct {
 			const char *word;
@@ -181,7 +191,7 @@ void config_read_file(struct ts_config *c, const char *path) {
 		} else if (strcmp(key, "animations") == 0) {
 			c->animations = parse_bool(val);
 		} else if (strcmp(key, "scale") == 0) {
-			c->scale = strcmp(val, "auto") == 0 ? 0 : atof(val);
+			c->scale = parse_scale(val);
 		} else if (strcmp(key, "gaps") == 0) {
 			c->gaps = val[0] ? atoi(val) : -1;
 		} else if (strcmp(key, "layout_size") == 0) {
@@ -252,6 +262,12 @@ void config_limit(struct ts_config *c) {
 		c->pointer_speed = -1;
 	} else if (c->pointer_speed > 1) {
 		c->pointer_speed = 1;
+	}
+	/* Written so that 0 (automatic) and anything that is not a number at all
+	 * both come out as 0, which is how "work it out from the screen" is
+	 * spelled. Comparing the other way round would let a NaN through. */
+	if (!(c->scale >= TS_SCALE_MIN && c->scale <= TS_SCALE_MAX)) {
+		c->scale = 0;
 	}
 	if (c->night_temperature < 2000) {
 		c->night_temperature = 2000;

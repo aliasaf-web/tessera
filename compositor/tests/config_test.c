@@ -1,5 +1,10 @@
 /* Reads tests/config-sample and checks every value. The shell's reader is
- * checked against the same file in tests/test_shell.py. */
+ * checked against the same file in tests/test_shell.py.
+ *
+ * A second file, compositor/tests/config-limits-sample, holds the values that
+ * are not values: a scale of 8, of 99, of 0.1 and of nan. Every one of them
+ * has to come out as 0 ("work it out"), because the only writer that is not a
+ * person typing is the shell, and it writes from a list. */
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -61,6 +66,23 @@ int main(int argc, char **argv) {
 	config_defaults(&missing);
 	config_read_file(&missing, "/nonexistent/tessera/config");
 	check(strcmp(missing.theme, "dark") == 0, "a missing file changes nothing");
+
+	if (argc >= 3) {
+		struct ts_config limits;
+		config_defaults(&limits);
+		config_read_file(&limits, argv[2]);
+		config_limit(&limits);
+		check(limits.scale == 0, "a global scale outside 0.5 to 4 becomes automatic");
+		const struct ts_display_config *big = display(&limits, "HDMI-A-1");
+		check(big && big->scale == 0, "a screen scale of 99 becomes automatic");
+		const struct ts_display_config *small = display(&limits, "DP-2");
+		check(small && small->scale == 0, "a screen scale of 0.1 becomes automatic");
+		const struct ts_display_config *nan = display(&limits, "eDP-1");
+		check(nan && nan->scale == 0, "a screen scale of nan becomes automatic");
+	} else {
+		printf("FAIL: no limits sample given\n");
+		failures++;
+	}
 
 	if (failures == 0) {
 		printf("all settings read correctly\n");

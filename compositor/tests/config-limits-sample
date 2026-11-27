@@ -1,0 +1,8 @@
+# Scales that are not scales, for config_test. The global setting and a
+# screen's own must both fall back to "work it out" (0) rather than reaching
+# the compositor as they stand: the shell only ever writes values from a list,
+# so anything else here was typed into the file by hand.
+scale=8
+display.HDMI-A-1.scale=99
+display.DP-2.scale=0.1
+display.eDP-1.scale=nan
