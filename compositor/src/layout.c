@@ -106,24 +106,32 @@ static uint32_t now_ms(void) {
 	return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* How far the slide has carried this window: 0 for a window that is not part
+ * of one, or is on another screen. */
+int layout_slide_offset(struct ts_view *view) {
+	struct ts_server *server = view->server;
+	if (!server->ws_anim.active || view->output == NULL ||
+			server->ws_anim.output != view->output) {
+		return 0;
+	}
+	return slide_offset(server->ws_anim.dir, server->ws_anim.width, server->ws_anim.eased,
+		view->workspace == server->ws_anim.from, view->workspace == server->ws_anim.to);
+}
+
 static void anim_place(struct ts_server *server, double progress) {
 	struct ts_output *output = server->ws_anim.output;
-	double eased = 1.0 - pow(1.0 - progress, 3);
-	int width = output->full_area.width + output_gaps(output);
-	int dir = server->ws_anim.dir;
+	/* Kept on the server, not passed along: a window can commit while the
+	 * slide is running, and it then asks where the slide has it. */
+	server->ws_anim.eased = 1.0 - pow(1.0 - progress, 3);
+	server->ws_anim.width = output->full_area.width + output_gaps(output);
 	struct ts_view *view;
 	wl_list_for_each(view, &server->views, link) {
-		if (!view->mapped || view->output != output) {
+		if (!view->mapped || view->output != output ||
+				(view->workspace != server->ws_anim.from &&
+				 view->workspace != server->ws_anim.to)) {
 			continue;
 		}
-		int offset;
-		if (view->workspace == server->ws_anim.from) {
-			offset = (int)(-dir * width * eased);
-		} else if (view->workspace == server->ws_anim.to) {
-			offset = (int)(dir * width * (1.0 - eased));
-		} else {
-			continue;
-		}
+		int offset = layout_slide_offset(view);
 		wlr_scene_node_set_enabled(&view->tree->node, true);
 		wlr_scene_node_set_enabled(&view->popup_tree->node, true);
 		wlr_scene_node_set_position(&view->tree->node, view->box.x + offset, view->box.y);

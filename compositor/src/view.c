@@ -197,14 +197,20 @@ void view_update_frame(struct ts_view *view) {
 	view->content = (struct wlr_box){ ox, oy, cw, ch };
 
 	/* The xdg scene tree already shifts the surface so that its origin is
-	 * the window geometry; clipping happens in surface coordinates. */
-	wlr_scene_node_set_position(&view->tree->node, b.x, b.y);
+	 * the window geometry; clipping happens in surface coordinates. The
+	 * window sits where the layout put it plus where the slide between
+	 * workspaces has carried it: a client that commits mid-slide - a
+	 * terminal blinking, a video playing - must not be snapped to the place
+	 * it will end up, which showed as the screen flickering during a
+	 * switch. */
+	int slide = layout_slide_offset(view);
+	wlr_scene_node_set_position(&view->tree->node, b.x + slide, b.y);
 	wlr_scene_node_set_position(&view->content_tree->node, ox, oy);
 	if (view->surface && !wl_list_empty(&view->content_tree->children)) {
 		struct wlr_box clip = { geo.x, geo.y, cw, ch };
 		wlr_scene_subsurface_tree_set_clip(&view->content_tree->node, &clip);
 	}
-	wlr_scene_node_set_position(&view->popup_tree->node, b.x + ox, b.y + oy);
+	wlr_scene_node_set_position(&view->popup_tree->node, b.x + ox + slide, b.y + oy);
 
 #if TESSERA_XWAYLAND
 	if (view->type == TS_VIEW_XWAYLAND && view->xsurface && view->mapped) {
